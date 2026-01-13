@@ -1,0 +1,10 @@
+services:
+  find:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BINARY_NAME: find
+    volumes:
+      - .:/workdir:ro
+    working_dir: /workdir
