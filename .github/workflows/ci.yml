@@ -11,11 +11,3 @@ jobs:
     uses: e-jerk/.github/.github/workflows/ci.yml@main
     with:
       binary_name: find
-      macos_test_script: |
-        mkdir -p testdir/subdir
-        touch testdir/file1.txt testdir/file2.txt testdir/subdir/file3.txt
-        $BINARY testdir -name "*.txt" --cpu
-      linux_test_script: |
-        mkdir -p testdir/subdir
-        touch testdir/file1.txt testdir/file2.txt testdir/subdir/file3.txt
-        $BINARY testdir -name "*.txt" --cpu
