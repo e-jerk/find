@@ -2,7 +2,8 @@
 # GNU find compatibility tests for e-jerk find
 # These tests are derived from GNU find test patterns
 
-FIND=${FIND:-"$(dirname "$0")/zig-out/bin/find"}
+# Convert to absolute path to handle cd in tests
+FIND=${FIND:-"$(cd "$(dirname "$0")" && pwd)/zig-out/bin/find"}
 TMPDIR=$(mktemp -d)
 trap "rm -rf $TMPDIR" EXIT
 
