@@ -425,23 +425,44 @@ fn walkDirectory(
         if (depth > max) return;
     }
 
-    // Add this path if it passes min_depth filter
-    if (depth >= options.min_depth) {
-        // Check file type filter
-        const stat = std.fs.cwd().statFile(path) catch |err| {
-            if (err == error.FileNotFound) return;
-            return err;
-        };
+    // Try to open as directory first to determine type
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+        if (err == error.NotDir) {
+            // It's a file, not a directory
+            if (depth >= options.min_depth) {
+                const stat = std.fs.cwd().statFile(path) catch |stat_err| {
+                    if (stat_err == error.FileNotFound) return;
+                    return stat_err;
+                };
 
+                const passes_type_filter = switch (options.file_type) {
+                    .any => true,
+                    .file => stat.kind == .file,
+                    .directory => false,
+                    .symlink => stat.kind == .sym_link,
+                    .block_device => stat.kind == .block_device,
+                    .char_device => stat.kind == .character_device,
+                    .fifo => stat.kind == .named_pipe,
+                    .socket => stat.kind == .unix_domain_socket,
+                };
+
+                if (passes_type_filter) {
+                    try collected.append(allocator, try allocator.dupe(u8, path));
+                }
+            }
+            return;
+        }
+        if (err == error.FileNotFound or err == error.AccessDenied) return;
+        return err;
+    };
+    defer dir.close();
+
+    // It's a directory - add it if it passes filters
+    if (depth >= options.min_depth) {
         const passes_type_filter = switch (options.file_type) {
             .any => true,
-            .file => stat.kind == .file,
-            .directory => stat.kind == .directory,
-            .symlink => stat.kind == .sym_link,
-            .block_device => stat.kind == .block_device,
-            .char_device => stat.kind == .character_device,
-            .fifo => stat.kind == .named_pipe,
-            .socket => stat.kind == .unix_domain_socket,
+            .directory => true,
+            else => false,
         };
 
         if (passes_type_filter) {
@@ -449,13 +470,7 @@ fn walkDirectory(
         }
     }
 
-    // Recurse into directories
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
-        if (err == error.NotDir or err == error.AccessDenied) return;
-        return err;
-    };
-    defer dir.close();
-
+    // Recurse into directory contents
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
         const child_path = try std.fs.path.join(allocator, &[_][]const u8{ path, entry.name });
