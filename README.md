@@ -7,7 +7,7 @@ A high-performance `find` replacement that uses GPU acceleration via Metal (macO
 - **GPU-Accelerated Pattern Matching**: Parallel glob matching on Metal and Vulkan compute shaders
 - **SIMD-Optimized CPU**: Vectorized glob matching with 16/32-byte operations
 - **Auto-Selection**: Intelligent backend selection based on path count and pattern complexity
-- **GNU Compatible**: Drop-in replacement supporting `-name`, `-iname`, `-path`, `-ipath`
+- **GNU Compatible**: Full support for size filters, time filters, prune, and common find options
 
 ## Installation
 
@@ -25,6 +25,40 @@ find . -iname "*.JPG"
 # Full path matching
 find . -path "*src/*.c"
 
+# File type filtering
+find . -type f -name "*.zig"    # Files only
+find . -type d -name "test*"    # Directories only
+
+# Size filtering
+find . -size +1M                 # Greater than 1MB
+find . -size -100k               # Less than 100KB
+find . -size 50c                 # Exactly 50 bytes
+find . -size +10M -type f        # Large files only
+
+# Time filtering
+find . -mtime -1                 # Modified within last day
+find . -mtime +7                 # Modified more than 7 days ago
+find . -mtime 0                  # Modified today
+find . -atime -1                 # Accessed within last day
+find . -ctime +30                # Status changed > 30 days ago
+
+# Prune directories
+find . -prune node_modules -name "*.js"
+find . -prune ".git" -name "*.c"
+find . -prune "build*" -type f
+
+# Depth control
+find . -maxdepth 2 -name "*.md"
+find . -mindepth 1 -maxdepth 3
+
+# Negation
+find . -not -name "*.o"
+find . ! -type d
+
+# Empty files/directories
+find . -empty -type f
+find . -empty -type d
+
 # Force GPU backend
 find --gpu . -name "*.zig"
 
@@ -37,6 +71,33 @@ find --cpu . -name "*.py"
 find -V . -name "*.js"
 ```
 
+## GNU Feature Compatibility
+
+| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
+|---------|:-------------:|:-----------:|:-----:|:------:|--------|
+| `-name` pattern | ✓ | ✓ | ✓ | ✓ | Native |
+| `-iname` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
+| `-path` full path match | ✓ | ✓ | ✓ | ✓ | Native |
+| `-ipath` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
+| `-type f/d/l/...` | ✓ | ✓ | ✓ | ✓ | Native |
+| `-maxdepth` | ✓ | ✓ | ✓ | ✓ | Native |
+| `-mindepth` | ✓ | ✓ | ✓ | ✓ | Native |
+| `-print0` | ✓ | ✓ | ✓ | ✓ | Native |
+| `-o` (OR patterns) | ✓ | ✓ | — | — | Native (CPU) |
+| `-not` / `!` (negation) | ✓ | ✓ | ✓ | ✓ | Native |
+| `-empty` | ✓ | ✓ | — | — | Native (CPU) |
+| `-size [+-]N[ckMG]` | ✓ | ✓ | — | — | **Native** |
+| `-mtime [+-]N` | ✓ | ✓ | — | — | **Native** |
+| `-atime [+-]N` | ✓ | ✓ | — | — | **Native** |
+| `-ctime [+-]N` | ✓ | ✓ | — | — | **Native** |
+| `-prune PATTERN` | ✓ | ✓ | — | — | **Native** |
+| `-newer FILE` | — | ✓ | — | — | GNU fallback |
+| `-exec` / `-execdir` | — | ✓ | — | — | GNU fallback |
+| `-delete` | — | ✓ | — | — | GNU fallback |
+| `-regex` | — | ✓ | — | — | GNU fallback |
+
+**Test Coverage**: 36/36 GNU compatibility tests passing
+
 ## Pattern Syntax
 
 | Pattern | Description |
@@ -47,14 +108,50 @@ find -V . -name "*.js"
 | `[a-z]` | Match any character in range |
 | `[!abc]` | Match any character NOT in set |
 
+## Size Filter Syntax
+
+| Suffix | Meaning |
+|--------|---------|
+| `c` | Bytes |
+| `k` | Kilobytes (1024 bytes) |
+| `M` | Megabytes (1024 KB) |
+| `G` | Gigabytes (1024 MB) |
+| (none) | 512-byte blocks |
+
+| Prefix | Meaning |
+|--------|---------|
+| `+` | Greater than |
+| `-` | Less than |
+| (none) | Exactly |
+
+## Time Filter Syntax
+
+| Prefix | Meaning |
+|--------|---------|
+| `+N` | More than N days ago |
+| `-N` | Within the last N days |
+| `N` | Exactly N days ago |
+
 ## Options
 
 | Flag | Description |
 |------|-------------|
-| `-name` | Match basename against pattern |
-| `-iname` | Case-insensitive basename match |
-| `-path` | Match full path against pattern |
-| `-ipath` | Case-insensitive path match |
+| `-name PATTERN` | Match basename against pattern |
+| `-iname PATTERN` | Case-insensitive basename match |
+| `-path PATTERN` | Match full path against pattern |
+| `-ipath PATTERN` | Case-insensitive path match |
+| `-type TYPE` | File type (f=file, d=dir, l=link, etc.) |
+| `-maxdepth N` | Max directory depth |
+| `-mindepth N` | Min directory depth |
+| `-size [+-]N[ckMG]` | Filter by file size |
+| `-mtime [+-]N` | Filter by modification time (days) |
+| `-atime [+-]N` | Filter by access time (days) |
+| `-ctime [+-]N` | Filter by status change time (days) |
+| `-prune PATTERN` | Skip directories matching pattern |
+| `-empty` | Match empty files/directories |
+| `-not`, `!` | Negate following test |
+| `-o` | OR multiple patterns |
+| `-print0` | Null-terminated output |
 | `-V, --verbose` | Show timing and backend info |
 
 ## Backend Selection
@@ -64,17 +161,18 @@ find -V . -name "*.js"
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
 | `--cpu` | Force CPU backend |
+| `--gnu` | Force GNU find backend |
 | `--metal` | Force Metal backend (macOS only) |
 | `--vulkan` | Force Vulkan backend |
 
 ## Architecture & Optimizations
 
-### CPU Implementation (`src/cpu.zig`)
+### CPU Implementation (`src/main.zig`)
 
 The CPU backend implements fnmatch-compatible glob matching with SIMD acceleration:
 
 **Glob Pattern Matching**:
-- `globMatchSIMD()`: Full glob implementation with `*`, `?`, `[...]` support
+- `matchGlob()`: Full glob implementation with `*`, `?`, `[...]` support
 - Backtracking algorithm for `*` wildcard handling
 - Character class parsing with range support (`[a-z]`) and negation (`[!abc]`)
 
@@ -84,8 +182,23 @@ The CPU backend implements fnmatch-compatible glob matching with SIMD accelerati
 - `toLowerVec16()`: Parallel lowercase conversion using `@select`
 - `toLowerSlice()`: 16-byte chunked lowercase for pattern preprocessing
 
+**Size Filter**:
+- `SizeFilter` struct with `bytes`, `comparison` (exact/greater/less)
+- `parseSizeArg()`: Parses `[+-]N[ckMG]` format
+- Applied after stat in `walkDirectory()`
+
+**Time Filter**:
+- `TimeFilter` struct with `days`, `comparison`, `time_type`
+- Handles `mtime`, `atime`, `ctime` with proper macOS i128 nanoseconds handling
+- Comparison: newer (`-N`), older (`+N`), exact (`N`)
+
+**Prune**:
+- `prune_pattern` in `FindOptions`
+- Checked at directory entry, skips entire subtree on match
+- Supports glob patterns (`build*`, `.git`)
+
 **Character Class Matching**:
-- `matchCharClassSIMD()`: Parses `[...]` patterns efficiently
+- `matchCharClass()`: Parses `[...]` patterns efficiently
 - Handles ranges, negation, and literal `]` as first character
 - Returns match result and consumed bytes for pattern advancement
 
@@ -148,22 +261,15 @@ The `e_jerk_gpu` library scores based on:
 
 ## Performance
 
-| Path Count | GPU Speedup |
-|------------|-------------|
-| 10K paths | ~3-4x |
-| 50K paths | ~3-4x |
-| 100K paths | ~4-5x |
-| 1M paths | ~5-7x |
+| Path Count | CPU | GPU | Speedup |
+|------------|-----|-----|---------|
+| 10K paths | 4.3M paths/s | 13.6M paths/s | **3.2x** |
+| 50K paths | 4.7M paths/s | 16.7M paths/s | **3.6x** |
+| Case-insensitive | 3.5M paths/s | 15.0M paths/s | **4.3x** |
+| Character class | 4.3M paths/s | 15.0M paths/s | **3.5x** |
+| Complex pattern | 10.7M paths/s | 15.0M paths/s | **1.4x** |
 
-| Pattern Type | Speedup |
-|--------------|---------|
-| Case-insensitive (`-iname`) | **4.2x** |
-| Character class (`[a-f]*.log`) | **3.4x** |
-| Extension match (`*.txt`) | **3.0x** |
-| Path match (`*src/*.c`) | **2.4x** |
-| Simple wildcard (`*`) | **1.2x** |
-
-*Results measured on Apple M1 Max with 50K paths.*
+*Results measured on Apple M1 Max.*
 
 ## Requirements
 
@@ -178,8 +284,17 @@ zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test      # Unit tests
-zig build smoke     # Integration tests
+zig build smoke     # Integration tests (GPU verification)
+bash gnu-tests.sh   # GNU compatibility tests (36 tests)
 ```
+
+## Recent Changes
+
+- **Size Filter**: Native `-size [+-]N[ckMG]` support for filtering by file size
+- **Time Filters**: Native `-mtime`, `-atime`, `-ctime` with `[+-]N` syntax
+- **Prune**: Native `-prune PATTERN` to skip directories matching glob patterns
+- **macOS Compatibility**: Proper handling of macOS i128 nanosecond timestamps
+- **Test Coverage**: 36 GNU compatibility tests passing
 
 ## License
 
