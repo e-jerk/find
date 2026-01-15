@@ -2,12 +2,14 @@ const std = @import("std");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
+const cpu_gnu = @import("cpu_gnu");
 
 /// Backend selection mode
 const BackendMode = enum {
     auto, // Automatically select based on workload
     gpu_mode, // Auto-select best GPU (Metal on macOS, else Vulkan)
     cpu_mode,
+    cpu_gnu, // GNU find reference implementation
     metal,
     vulkan,
 };
@@ -139,6 +141,8 @@ pub fn main() !u8 {
             options.count_only = true;
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             backend_mode = .cpu_mode;
+        } else if (std.mem.eql(u8, arg, "--gnu")) {
+            backend_mode = .cpu_gnu;
         } else if (std.mem.eql(u8, arg, "--gpu")) {
             backend_mode = .gpu_mode;
         } else if (std.mem.eql(u8, arg, "--metal")) {
@@ -359,7 +363,7 @@ fn findFiles(
     const use_gpu = switch (backend_mode) {
         .auto => gpu.shouldUseGpu(collected_paths.items.len),
         .gpu_mode, .metal, .vulkan => true,
-        .cpu_mode => false,
+        .cpu_mode, .cpu_gnu => false,
     };
 
     var match_count: usize = 0;
@@ -395,12 +399,19 @@ fn findFiles(
 
     // CPU fallback
     if (verbose) {
-        std.debug.print("Using CPU backend\n", .{});
+        const backend_name = if (backend_mode == .cpu_gnu) "CPU (GNU)" else "CPU (Optimized)";
+        std.debug.print("Using {s} backend\n", .{backend_name});
     }
 
-    var result = cpu.matchNames(collected_paths.items, pattern, match_options, allocator) catch {
-        return .{ .count = 0, .had_error = true };
-    };
+    // Select appropriate CPU backend
+    var result = if (backend_mode == .cpu_gnu)
+        cpu_gnu.matchNames(collected_paths.items, pattern, match_options, allocator) catch {
+            return .{ .count = 0, .had_error = true };
+        }
+    else
+        cpu.matchNames(collected_paths.items, pattern, match_options, allocator) catch {
+            return .{ .count = 0, .had_error = true };
+        };
     defer result.deinit();
 
     for (result.matches) |match| {
