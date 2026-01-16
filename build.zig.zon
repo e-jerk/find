@@ -7,8 +7,8 @@
     .dependencies = .{
         // Regex engine for pattern matching
         .regex = .{
-            .url = "git+https://github.com/e-jerk/regex#57a999b543352afed4b110f51f766a3ba91f763b",
-            .hash = "e_jerk_regex-0.1.0-ex0qscb1AAD9BAq40H7IznBZgW049MlUMBj0WK_03mCa",
+            .url = "git+https://github.com/e-jerk/regex#bf3f7db91ab18d0782acf46fa39f170abb2670ad",
+            .hash = "e_jerk_regex-0.1.0-ex0qsUv2AADQ6ViebDG4UIHjxP9EAH7Ybws-O_VN62BB",
         },
         // Shared shader library
         .shaders_common = .{
