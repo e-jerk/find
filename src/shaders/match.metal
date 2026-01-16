@@ -1,5 +1,6 @@
 #include <metal_stdlib>
 #include "string_ops.h"
+#include "regex_ops.h"
 using namespace metal;
 
 // Match configuration
@@ -195,6 +196,79 @@ kernel void match_names(
         case_insensitive,
         match_period
     );
+
+    results[gid].name_idx = gid;
+    results[gid].matched = matched ? 1 : 0;
+
+    if (matched) {
+        atomic_fetch_add_explicit(match_count, 1, memory_order_relaxed);
+    }
+}
+
+// ============================================================================
+// Regex Matching Kernel for find -regex
+// Uses Thompson NFA from regex_ops.h - matches ENTIRE path (like GNU find)
+// ============================================================================
+
+struct RegexMatchConfig {
+    uint num_names;
+    uint num_states;
+    uint start_state;
+    uint header_flags;
+    uint num_bitmaps;
+    uint flags;
+    uint _pad1;
+    uint _pad2;
+};
+
+kernel void regex_match_names(
+    constant RegexMatchConfig& config [[buffer(0)]],
+    constant RegexState* states [[buffer(1)]],
+    constant uint* bitmaps [[buffer(2)]],
+    device const uchar* names_data [[buffer(3)]],
+    constant uint* name_offsets [[buffer(4)]],
+    constant uint* name_lengths [[buffer(5)]],
+    device MatchResult* results [[buffer(6)]],
+    device atomic_uint* match_count [[buffer(7)]],
+    constant RegexHeader& header [[buffer(8)]],
+    uint gid [[thread_position_in_grid]]
+) {
+    if (gid >= config.num_names) return;
+
+    // Get the path for this thread
+    uint name_offset = name_offsets[gid];
+    uint name_len = name_lengths[gid];
+    device const uchar* name = names_data + name_offset;
+
+    bool match_path = (config.flags & FLAG_MATCH_PATH) != 0;
+
+    // For -regex, always match full path (like GNU find)
+    device const uchar* match_str = name;
+    uint match_len = name_len;
+
+    if (!match_path) {
+        uint basename_start = find_basename_start_device(name, name_len);
+        match_str = name + basename_start;
+        match_len = name_len - basename_start;
+    }
+
+    // Try to match entire path using regex_match_at
+    // GNU find -regex requires the regex to match the ENTIRE path
+    uint match_start = 0;
+    uint match_end = 0;
+    bool found = regex_find(
+        &header,
+        states,
+        bitmaps,
+        match_str,
+        match_len,
+        0,
+        &match_start,
+        &match_end
+    );
+
+    // For GNU find compatibility, regex must match entire path
+    bool matched = found && (match_start == 0) && (match_end == match_len);
 
     results[gid].name_idx = gid;
     results[gid].matched = matched ? 1 : 0;

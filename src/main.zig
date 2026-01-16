@@ -736,6 +736,60 @@ fn findFilesWithRegex(
         }
     }
 
+    // Try Vulkan GPU regex matching
+    if (use_gpu and (backend_mode == .auto or backend_mode == .gpu_mode or backend_mode == .vulkan)) {
+        if (gpu.vulkan.VulkanMatcher.init(allocator)) |matcher| {
+            defer matcher.deinit();
+
+            if (verbose) {
+                std.debug.print("Using Vulkan backend (regex)\n", .{});
+            }
+
+            const match_opts = gpu.MatchOptions{
+                .case_insensitive = case_insensitive,
+                .match_path = true, // -regex always matches full path
+                .match_period = false,
+            };
+
+            var result = matcher.matchNamesRegex(paths, pattern, match_opts, allocator) catch |err| {
+                if (verbose) {
+                    std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
+                }
+                return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+            };
+            defer result.deinit();
+
+            if (options.negate_pattern) {
+                var matched_set = std.AutoHashMap(u32, void).init(allocator);
+                defer matched_set.deinit();
+                for (result.matches) |match| {
+                    matched_set.put(match.name_idx, {}) catch {};
+                }
+                for (paths, 0..) |path, idx| {
+                    if (!matched_set.contains(@intCast(idx))) {
+                        if (!options.count_only) {
+                            printPath(path, options.print0);
+                        }
+                        match_count += 1;
+                    }
+                }
+            } else {
+                for (result.matches) |match| {
+                    if (!options.count_only) {
+                        printPath(paths[match.name_idx], options.print0);
+                    }
+                    match_count += 1;
+                }
+            }
+
+            return .{ .count = match_count, .had_error = false };
+        } else |_| {
+            if (verbose) {
+                std.debug.print("Vulkan init failed, falling back to CPU\n", .{});
+            }
+        }
+    }
+
     // CPU fallback
     return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
 }

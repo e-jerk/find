@@ -2,12 +2,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const vk = @import("vulkan");
 const spirv = @import("spirv");
+const spirv_regex = @import("spirv_regex");
 const mod = @import("mod.zig");
 
 const MatchConfig = mod.MatchConfig;
 const MatchResult = mod.MatchResult;
 const MatchOptions = mod.MatchOptions;
 const BatchMatchResult = mod.BatchMatchResult;
+const RegexState = mod.RegexState;
+const RegexMatchConfig = mod.RegexMatchConfig;
 const MAX_GPU_BUFFER_SIZE = mod.MAX_GPU_BUFFER_SIZE;
 
 const VulkanLoader = struct {
@@ -47,11 +50,18 @@ pub const VulkanMatcher = struct {
     device: vk.Device,
     compute_queue: vk.Queue,
     compute_queue_family: u32,
+    // Glob matching pipeline
     descriptor_set_layout: vk.DescriptorSetLayout,
     pipeline_layout: vk.PipelineLayout,
     compute_pipeline: vk.Pipeline,
-    descriptor_pool: vk.DescriptorPool,
     shader_module: vk.ShaderModule,
+    // Regex matching pipeline
+    regex_descriptor_set_layout: vk.DescriptorSetLayout,
+    regex_pipeline_layout: vk.PipelineLayout,
+    regex_compute_pipeline: vk.Pipeline,
+    regex_shader_module: vk.ShaderModule,
+    // Shared resources
+    descriptor_pool: vk.DescriptorPool,
     command_pool: vk.CommandPool,
     fence: vk.Fence,
     mem_props: vk.PhysicalDeviceMemoryProperties,
@@ -164,12 +174,47 @@ pub const VulkanMatcher = struct {
         }), null, @ptrCast(&compute_pipeline)) catch return error.ComputePipelineCreationFailed;
         errdefer vkd.destroyPipeline(device, compute_pipeline, null);
 
-        // Pool sizes: 1 uniform buffer + 6 storage buffers
+        // ============================================================================
+        // Regex matching pipeline
+        // ============================================================================
+
+        const regex_shader_module = vkd.createShaderModule(device, &.{ .code_size = spirv_regex.EMBEDDED_SPIRV_REGEX.len, .p_code = @ptrCast(@alignCast(spirv_regex.EMBEDDED_SPIRV_REGEX.ptr)) }, null) catch return error.ShaderModuleCreationFailed;
+        errdefer vkd.destroyShaderModule(device, regex_shader_module, null);
+
+        // 8 bindings for regex shader (all storage buffers - shader uses std430 buffer layout):
+        // 0: config, 1: states, 2: bitmaps, 3: names_data, 4: name_offsets, 5: name_lengths, 6: results, 7: match_count
+        const regex_bindings = [_]vk.DescriptorSetLayoutBinding{
+            .{ .binding = 0, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 1, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 2, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 3, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 4, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 5, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 6, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+            .{ .binding = 7, .descriptor_type = .storage_buffer, .descriptor_count = 1, .stage_flags = .{ .compute_bit = true }, .p_immutable_samplers = null },
+        };
+
+        const regex_descriptor_set_layout = vkd.createDescriptorSetLayout(device, &.{ .binding_count = regex_bindings.len, .p_bindings = &regex_bindings }, null) catch return error.DescriptorSetLayoutCreationFailed;
+        errdefer vkd.destroyDescriptorSetLayout(device, regex_descriptor_set_layout, null);
+
+        const regex_pipeline_layout = vkd.createPipelineLayout(device, &.{ .set_layout_count = 1, .p_set_layouts = @ptrCast(&regex_descriptor_set_layout), .push_constant_range_count = 0, .p_push_constant_ranges = null }, null) catch return error.PipelineLayoutCreationFailed;
+        errdefer vkd.destroyPipelineLayout(device, regex_pipeline_layout, null);
+
+        var regex_compute_pipeline: vk.Pipeline = undefined;
+        _ = vkd.createComputePipelines(device, .null_handle, 1, @ptrCast(&vk.ComputePipelineCreateInfo{
+            .stage = .{ .stage = .{ .compute_bit = true }, .module = regex_shader_module, .p_name = "main", .p_specialization_info = null },
+            .layout = regex_pipeline_layout,
+            .base_pipeline_handle = .null_handle,
+            .base_pipeline_index = -1,
+        }), null, @ptrCast(&regex_compute_pipeline)) catch return error.ComputePipelineCreationFailed;
+        errdefer vkd.destroyPipeline(device, regex_compute_pipeline, null);
+
+        // Pool sizes: 1 uniform buffer (for glob) + 14 storage buffers (6 for glob + 8 for regex)
         const pool_sizes = [_]vk.DescriptorPoolSize{
             .{ .type = .uniform_buffer, .descriptor_count = 1 },
-            .{ .type = .storage_buffer, .descriptor_count = 6 },
+            .{ .type = .storage_buffer, .descriptor_count = 14 },
         };
-        const descriptor_pool = vkd.createDescriptorPool(device, &.{ .max_sets = 1, .pool_size_count = 2, .p_pool_sizes = &pool_sizes }, null) catch return error.DescriptorPoolCreationFailed;
+        const descriptor_pool = vkd.createDescriptorPool(device, &.{ .max_sets = 2, .pool_size_count = 2, .p_pool_sizes = &pool_sizes }, null) catch return error.DescriptorPoolCreationFailed;
         errdefer vkd.destroyDescriptorPool(device, descriptor_pool, null);
 
         const command_pool = vkd.createCommandPool(device, &.{ .queue_family_index = selected_queue_family, .flags = .{ .reset_command_buffer_bit = true } }, null) catch return error.CommandPoolCreationFailed;
@@ -220,11 +265,18 @@ pub const VulkanMatcher = struct {
             .device = device,
             .compute_queue = compute_queue,
             .compute_queue_family = selected_queue_family,
+            // Glob pipeline
             .descriptor_set_layout = descriptor_set_layout,
             .pipeline_layout = pipeline_layout,
             .compute_pipeline = compute_pipeline,
-            .descriptor_pool = descriptor_pool,
             .shader_module = shader_module,
+            // Regex pipeline
+            .regex_descriptor_set_layout = regex_descriptor_set_layout,
+            .regex_pipeline_layout = regex_pipeline_layout,
+            .regex_compute_pipeline = regex_compute_pipeline,
+            .regex_shader_module = regex_shader_module,
+            // Shared resources
+            .descriptor_pool = descriptor_pool,
             .command_pool = command_pool,
             .fence = fence,
             .mem_props = mem_props,
@@ -241,6 +293,12 @@ pub const VulkanMatcher = struct {
         self.vkd.destroyFence(self.device, self.fence, null);
         self.vkd.destroyCommandPool(self.device, self.command_pool, null);
         self.vkd.destroyDescriptorPool(self.device, self.descriptor_pool, null);
+        // Destroy regex pipeline
+        self.vkd.destroyPipeline(self.device, self.regex_compute_pipeline, null);
+        self.vkd.destroyPipelineLayout(self.device, self.regex_pipeline_layout, null);
+        self.vkd.destroyDescriptorSetLayout(self.device, self.regex_descriptor_set_layout, null);
+        self.vkd.destroyShaderModule(self.device, self.regex_shader_module, null);
+        // Destroy glob pipeline
         self.vkd.destroyPipeline(self.device, self.compute_pipeline, null);
         self.vkd.destroyPipelineLayout(self.device, self.pipeline_layout, null);
         self.vkd.destroyDescriptorSetLayout(self.device, self.descriptor_set_layout, null);
@@ -419,6 +477,189 @@ pub const VulkanMatcher = struct {
             if (results_ptr[i].matched != 0) match_count += 1;
         }
         _ = gpu_match_count;
+
+        // Collect matching results
+        const matches = try result_allocator.alloc(MatchResult, match_count);
+        var match_idx: usize = 0;
+        for (0..names.len) |i| {
+            if (results_ptr[i].matched != 0) {
+                matches[match_idx] = results_ptr[i];
+                match_idx += 1;
+            }
+        }
+
+        self.vkd.resetDescriptorPool(self.device, self.descriptor_pool, .{}) catch {};
+        return BatchMatchResult{ .matches = matches, .total_matches = match_count, .allocator = result_allocator };
+    }
+
+    pub fn matchNamesRegex(self: *Self, names: []const []const u8, pattern: []const u8, options: MatchOptions, result_allocator: std.mem.Allocator) !BatchMatchResult {
+        if (names.len == 0) return BatchMatchResult{ .matches = &[_]MatchResult{}, .total_matches = 0, .allocator = result_allocator };
+
+        // Compile regex pattern to GPU format
+        const compiled = mod.regex_compiler.compileForGpu(pattern, .{
+            .case_insensitive = options.case_insensitive,
+        }, self.allocator) catch |err| {
+            switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.RegexCompilationFailed,
+            }
+        };
+        defer self.allocator.free(compiled.states);
+        defer if (compiled.bitmaps.len > 0) self.allocator.free(compiled.bitmaps);
+
+        // Pack names into a single buffer with offsets
+        var total_name_bytes: usize = 0;
+        for (names) |name| {
+            total_name_bytes += name.len;
+        }
+
+        if (total_name_bytes > MAX_GPU_BUFFER_SIZE) return error.TextTooLarge;
+
+        // Create buffers to match shader layout (all storage buffers):
+        // 0: config, 1: states, 2: bitmaps, 3: names_data, 4: name_offsets, 5: name_lengths, 6: results, 7: match_count
+
+        // Binding 0: Config (storage buffer - shader uses std430 buffer)
+        const config_buffer = try self.createStorageBuffer(@sizeOf(RegexMatchConfig));
+        defer self.destroyBuffer(config_buffer);
+
+        // Binding 1: Regex states (storage buffer)
+        const states_size: vk.DeviceSize = @intCast(compiled.states.len * @sizeOf(RegexState));
+        const states_buffer = try self.createStorageBuffer(@max(states_size, 4));
+        defer self.destroyBuffer(states_buffer);
+
+        // Binding 2: Bitmaps (storage buffer)
+        const bitmaps_size: vk.DeviceSize = @intCast(@max(compiled.bitmaps.len * @sizeOf(u32), 4));
+        const bitmaps_buffer = try self.createStorageBuffer(bitmaps_size);
+        defer self.destroyBuffer(bitmaps_buffer);
+
+        // Binding 3: Names data (storage buffer)
+        const names_size: vk.DeviceSize = @intCast(((total_name_bytes + 3) / 4) * 4);
+        const names_buffer = try self.createStorageBuffer(@max(names_size, 4));
+        defer self.destroyBuffer(names_buffer);
+
+        // Binding 4: Name offsets (storage buffer)
+        const offsets_size: vk.DeviceSize = @intCast(names.len * @sizeOf(u32));
+        const offsets_buffer = try self.createStorageBuffer(@max(offsets_size, 4));
+        defer self.destroyBuffer(offsets_buffer);
+
+        // Binding 5: Name lengths (storage buffer)
+        const lengths_size: vk.DeviceSize = @intCast(names.len * @sizeOf(u32));
+        const lengths_buffer = try self.createStorageBuffer(@max(lengths_size, 4));
+        defer self.destroyBuffer(lengths_buffer);
+
+        // Binding 6: Results (storage buffer)
+        const results_size: vk.DeviceSize = @intCast(((names.len * @sizeOf(MatchResult) + 3) / 4) * 4);
+        const results_buffer = try self.createStorageBuffer(@max(results_size, 4));
+        defer self.destroyBuffer(results_buffer);
+
+        // Binding 7: Match count (storage buffer)
+        const count_buffer = try self.createStorageBuffer(@sizeOf(u32));
+        defer self.destroyBuffer(count_buffer);
+
+        // Copy regex states
+        const states_ptr: [*]RegexState = @ptrCast(@alignCast(states_buffer.mapped));
+        for (compiled.states, 0..) |state, i| {
+            states_ptr[i] = state;
+        }
+
+        // Copy bitmaps
+        if (compiled.bitmaps.len > 0) {
+            const bitmaps_ptr: [*]u32 = @ptrCast(@alignCast(bitmaps_buffer.mapped));
+            for (compiled.bitmaps, 0..) |word, i| {
+                bitmaps_ptr[i] = word;
+            }
+        }
+
+        // Pack name data, offsets, and lengths
+        const names_ptr: [*]u8 = @ptrCast(names_buffer.mapped);
+        const offsets_ptr: [*]u32 = @ptrCast(@alignCast(offsets_buffer.mapped));
+        const lengths_ptr: [*]u32 = @ptrCast(@alignCast(lengths_buffer.mapped));
+        var current_offset: u32 = 0;
+        for (names, 0..) |name, i| {
+            @memcpy(names_ptr[current_offset .. current_offset + name.len], name);
+            offsets_ptr[i] = current_offset;
+            lengths_ptr[i] = @intCast(name.len);
+            current_offset += @intCast(name.len);
+        }
+
+        // Setup config
+        @as(*RegexMatchConfig, @ptrCast(@alignCast(config_buffer.mapped))).* = RegexMatchConfig{
+            .num_names = @intCast(names.len),
+            .num_states = @intCast(compiled.states.len),
+            .start_state = compiled.header.start_state,
+            .header_flags = compiled.header.flags,
+            .num_bitmaps = @intCast(compiled.bitmaps.len),
+            .flags = options.toFlags(),
+        };
+
+        // Clear results
+        const results_ptr: [*]MatchResult = @ptrCast(@alignCast(results_buffer.mapped));
+        for (0..names.len) |i| {
+            results_ptr[i] = MatchResult{ .name_idx = @intCast(i), .matched = 0 };
+        }
+
+        // Clear match count
+        @as(*u32, @ptrCast(@alignCast(count_buffer.mapped))).* = 0;
+
+        // Setup descriptor set
+        var descriptor_set: vk.DescriptorSet = undefined;
+        self.vkd.allocateDescriptorSets(self.device, &.{ .descriptor_pool = self.descriptor_pool, .descriptor_set_count = 1, .p_set_layouts = @ptrCast(&self.regex_descriptor_set_layout) }, @ptrCast(&descriptor_set)) catch return error.DescriptorSetAllocationFailed;
+
+        const buffer_infos = [_]vk.DescriptorBufferInfo{
+            .{ .buffer = config_buffer.buffer, .offset = 0, .range = @sizeOf(RegexMatchConfig) },
+            .{ .buffer = states_buffer.buffer, .offset = 0, .range = @max(states_size, 4) },
+            .{ .buffer = bitmaps_buffer.buffer, .offset = 0, .range = bitmaps_size },
+            .{ .buffer = names_buffer.buffer, .offset = 0, .range = @max(names_size, 4) },
+            .{ .buffer = offsets_buffer.buffer, .offset = 0, .range = @max(offsets_size, 4) },
+            .{ .buffer = lengths_buffer.buffer, .offset = 0, .range = @max(lengths_size, 4) },
+            .{ .buffer = results_buffer.buffer, .offset = 0, .range = @max(results_size, 4) },
+            .{ .buffer = count_buffer.buffer, .offset = 0, .range = @sizeOf(u32) },
+        };
+
+        // Write descriptors (all storage buffers)
+        const writes = [_]vk.WriteDescriptorSet{
+            .{ .dst_set = descriptor_set, .dst_binding = 0, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[0]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 1, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[1]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 2, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[2]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 3, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[3]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 4, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[4]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 5, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[5]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 6, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[6]), .p_texel_buffer_view = undefined },
+            .{ .dst_set = descriptor_set, .dst_binding = 7, .dst_array_element = 0, .descriptor_count = 1, .descriptor_type = .storage_buffer, .p_image_info = undefined, .p_buffer_info = @ptrCast(&buffer_infos[7]), .p_texel_buffer_view = undefined },
+        };
+        self.vkd.updateDescriptorSets(self.device, 8, &writes, 0, undefined);
+
+        // Record and submit command buffer
+        var command_buffer: vk.CommandBuffer = undefined;
+        self.vkd.allocateCommandBuffers(self.device, &.{ .command_pool = self.command_pool, .level = .primary, .command_buffer_count = 1 }, @ptrCast(&command_buffer)) catch return error.CommandBufferAllocationFailed;
+        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, 1, @ptrCast(&command_buffer));
+
+        self.vkd.beginCommandBuffer(command_buffer, &.{ .flags = .{ .one_time_submit_bit = true } }) catch return error.CommandBufferBeginFailed;
+        self.vkd.cmdBindPipeline(command_buffer, .compute, self.regex_compute_pipeline);
+        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.regex_pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+
+        // Shader uses local_size_x = 64, dispatch one workgroup per 64 names
+        const workgroups = @max(1, (names.len + 63) / 64);
+        self.vkd.cmdDispatch(command_buffer, @intCast(workgroups), 1, 1);
+        self.vkd.endCommandBuffer(command_buffer) catch return error.CommandBufferEndFailed;
+
+        self.vkd.queueSubmit(self.compute_queue, 1, @ptrCast(&vk.SubmitInfo{
+            .wait_semaphore_count = 0,
+            .p_wait_semaphores = undefined,
+            .p_wait_dst_stage_mask = undefined,
+            .command_buffer_count = 1,
+            .p_command_buffers = @ptrCast(&command_buffer),
+            .signal_semaphore_count = 0,
+            .p_signal_semaphores = undefined,
+        }), self.fence) catch return error.QueueSubmitFailed;
+        _ = self.vkd.waitForFences(self.device, 1, @ptrCast(&self.fence), .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
+        self.vkd.resetFences(self.device, 1, @ptrCast(&self.fence)) catch return error.FenceResetFailed;
+
+        // Count matches from results
+        var match_count: usize = 0;
+        for (0..names.len) |i| {
+            if (results_ptr[i].matched != 0) match_count += 1;
+        }
 
         // Collect matching results
         const matches = try result_allocator.alloc(MatchResult, match_count);

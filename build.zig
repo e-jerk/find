@@ -80,14 +80,15 @@ pub fn build(b: *std.Build) void {
     });
     spirv_regex_module.addAnonymousImport("match_regex.spv", .{ .root_source_file = spirv_regex_output });
 
-    // Preprocess Metal shader to inline the string_ops.h include
-    // Concatenates: header + shader (with include line removed)
+    // Preprocess Metal shader to inline the string_ops.h and regex_ops.h includes
+    // Concatenates: string_ops.h + regex_ops.h + shader (with include lines removed)
     const metal_preprocess = b.addSystemCommand(&.{
         "/bin/sh", "-c",
-        \\cat "$1" && grep -v '#include "string_ops.h"' "$2"
+        \\cat "$1" "$2" && grep -v '#include "string_ops.h"' "$3" | grep -v '#include "regex_ops.h"'
         , "--",
     });
     metal_preprocess.addFileArg(shaders_common.path("metal/string_ops.h"));
+    metal_preprocess.addFileArg(shaders_common.path("metal/regex_ops.h"));
     metal_preprocess.addFileArg(b.path("src/shaders/match.metal"));
     const preprocessed_metal = metal_preprocess.captureStdOut();
 

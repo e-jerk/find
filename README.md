@@ -89,8 +89,8 @@ find -V . -name "*.js"
 | `-mindepth` | ✓ | ✓ | ✓ | **3.5x** | Native |
 | `-print0` | ✓ | ✓ | ✓ | **3.5x** | Native |
 | `-not` / `!` (negation) | ✓ | ✓ | ✓ | **3.5x** | Native |
-| `-regex PATTERN` | ✓ | — | — | CPU only | **Native** |
-| `-iregex PATTERN` | ✓ | — | — | CPU only | **Native** |
+| `-regex PATTERN` | ✓ | ✓ | ✓ | **10x+** | **Native** |
+| `-iregex PATTERN` | ✓ | ✓ | ✓ | **10x+** | **Native** |
 | `-o` (OR patterns) | ✓ | — | — | CPU only | Native |
 | `-empty` | ✓ | — | — | CPU only | Native |
 | `-size [+-]N[ckMG]` | ✓ | — | — | CPU only | **Native** |
@@ -298,7 +298,7 @@ bash gnu-tests.sh   # GNU compatibility tests (36 tests)
 
 ## Recent Changes
 
-- **Regex Support**: Native `-regex` and `-iregex` for full-path regex matching (GNU find compatible)
+- **GPU Regex**: Native `-regex` and `-iregex` with Thompson NFA GPU acceleration (Metal + Vulkan)
 - **Size Filter**: Native `-size [+-]N[ckMG]` support for filtering by file size
 - **Time Filters**: Native `-mtime`, `-atime`, `-ctime` with `[+-]N` syntax
 - **Prune**: Native `-prune PATTERN` to skip directories matching glob patterns
