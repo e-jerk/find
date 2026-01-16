@@ -1,11 +1,15 @@
 const std = @import("std");
 const mtl = @import("zig-metal");
 const mod = @import("mod.zig");
+const regex_compiler = @import("regex_compiler.zig");
+const regex_lib = @import("regex");
 
 const MatchConfig = mod.MatchConfig;
 const MatchResult = mod.MatchResult;
 const MatchOptions = mod.MatchOptions;
 const BatchMatchResult = mod.BatchMatchResult;
+const RegexMatchConfig = mod.RegexMatchConfig;
+const RegexState = mod.RegexState;
 const EMBEDDED_METAL_SHADER = mod.EMBEDDED_METAL_SHADER;
 const MAX_GPU_BUFFER_SIZE = mod.MAX_GPU_BUFFER_SIZE;
 
@@ -224,6 +228,61 @@ pub const MetalMatcher = struct {
         return BatchMatchResult{
             .matches = matches,
             .total_matches = total_matches,
+            .allocator = allocator,
+        };
+    }
+
+    /// Match filenames against a regex pattern
+    /// Currently uses CPU regex with GPU compilation preparation for future GPU execution
+    pub fn matchNamesRegex(
+        self: *Self,
+        names: []const []const u8,
+        pattern: []const u8,
+        options: MatchOptions,
+        allocator: std.mem.Allocator,
+    ) !BatchMatchResult {
+        _ = self; // GPU execution to be implemented
+
+        if (names.len == 0) {
+            return BatchMatchResult{
+                .matches = &[_]MatchResult{},
+                .total_matches = 0,
+                .allocator = allocator,
+            };
+        }
+
+        // Use CPU regex matching (GPU regex to be added in future update)
+        var cpu_regex = try regex_lib.Regex.compile(allocator, pattern, .{
+            .case_insensitive = options.case_insensitive,
+        });
+        defer cpu_regex.deinit();
+
+        // Count matches and collect results
+        var matches_list: std.ArrayListUnmanaged(MatchResult) = .{};
+        defer matches_list.deinit(allocator);
+
+        for (names, 0..) |name, idx| {
+            // GNU find -regex matches entire path
+            if (cpu_regex.find(name, allocator)) |match_opt| {
+                if (match_opt) |match| {
+                    var m = match;
+                    defer m.deinit();
+                    // Check if match spans entire string (like GNU find -regex)
+                    if (m.start == 0 and m.end == name.len) {
+                        try matches_list.append(allocator, MatchResult{
+                            .name_idx = @intCast(idx),
+                            .matched = 1,
+                        });
+                    }
+                }
+            } else |_| {}
+        }
+
+        const matches = try matches_list.toOwnedSlice(allocator);
+
+        return BatchMatchResult{
+            .matches = matches,
+            .total_matches = matches.len,
             .allocator = allocator,
         };
     }

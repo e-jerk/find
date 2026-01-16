@@ -5,10 +5,13 @@
     .minimum_zig_version = "0.15.2",
 
     .dependencies = .{
+        // Regex engine for pattern matching
+        .regex = .{
+            .path = "../regex",
+        },
         // Shared shader library
         .shaders_common = .{
-            .url = "git+https://github.com/e-jerk/shaders-common#v0.1.0",
-            .hash = "shaders_common-0.1.0-dZ7wZ3kqAABTaMaUORx_Ezk1jtplGb5o0eCAlNQwAjng",
+            .path = "../shaders-common",
         },
         // GPU detection and auto-selection library
         .e_jerk_gpu = .{

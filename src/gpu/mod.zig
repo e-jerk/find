@@ -15,6 +15,8 @@ pub const metal = if (build_options.is_macos) @import("metal.zig") else struct {
     pub const MetalMatcher = void;
 };
 pub const vulkan = @import("vulkan.zig");
+pub const regex_compiler = @import("regex_compiler.zig");
+pub const regex = @import("regex");
 
 // Configuration
 pub const BATCH_SIZE: usize = 64 * 1024; // 64K filenames per batch
@@ -23,7 +25,12 @@ pub const MIN_GPU_SIZE: usize = 1024; // Minimum 1024 filenames for GPU
 pub const MAX_NAME_LEN: u32 = 4096; // Maximum filename length
 pub const MAX_PATTERN_LEN: u32 = 1024; // Maximum pattern length
 
+// Regex constants
+pub const MAX_REGEX_STATES: usize = 256;
+pub const BITMAP_WORDS_PER_CLASS: u32 = 8;
+
 pub const EMBEDDED_METAL_SHADER = if (build_options.is_macos) @import("metal_shader").EMBEDDED_METAL_SHADER else "";
+pub const EMBEDDED_SPIRV_REGEX = @import("spirv_regex").EMBEDDED_SPIRV_REGEX;
 
 // Match flags
 pub const MatchFlags = struct {
@@ -96,3 +103,62 @@ pub fn formatBytes(bytes: usize) struct { value: f64, unit: []const u8 } {
     if (bytes >= 1024) return .{ .value = @as(f64, @floatFromInt(bytes)) / 1024, .unit = "KB" };
     return .{ .value = @as(f64, @floatFromInt(bytes)), .unit = "B" };
 }
+
+// ============================================================================
+// Regex Types for GPU (Thompson NFA)
+// ============================================================================
+
+/// State types for Thompson NFA (must match shader)
+pub const RegexStateType = enum(u8) {
+    literal = 0,
+    char_class = 1,
+    dot = 2,
+    split = 3,
+    match_state = 4,
+    group_start = 5,
+    group_end = 6,
+    word_boundary = 7,
+    not_word_boundary = 8,
+    line_start = 9,
+    line_end = 10,
+    any = 11,
+};
+
+/// GPU regex state (packed for efficient GPU transfer)
+/// Layout: [type:8][flags:8][out:16] [out2:16][literal:8][group_idx:8] [bitmap_offset:32]
+pub const RegexState = extern struct {
+    type: u8,
+    flags: u8,
+    out: u16,
+    out2: u16,
+    literal_char: u8,
+    group_idx: u8,
+    bitmap_offset: u32,
+
+    pub const FLAG_CASE_INSENSITIVE: u8 = 1;
+    pub const FLAG_NEGATED: u8 = 2;
+};
+
+/// Regex header with metadata
+pub const RegexHeader = extern struct {
+    num_states: u32,
+    start_state: u32,
+    num_groups: u32,
+    flags: u32,
+
+    pub const FLAG_ANCHORED_START: u32 = 1;
+    pub const FLAG_ANCHORED_END: u32 = 2;
+    pub const FLAG_CASE_INSENSITIVE: u32 = 4;
+};
+
+/// Configuration for regex matching on GPU
+pub const RegexMatchConfig = extern struct {
+    num_names: u32,
+    num_states: u32,
+    start_state: u32,
+    header_flags: u32,
+    num_bitmaps: u32,
+    flags: u32,
+    _pad1: u32 = 0,
+    _pad2: u32 = 0,
+};

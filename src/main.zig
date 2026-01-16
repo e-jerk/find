@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
 const cpu_gnu = @import("cpu_gnu");
+const regex = gpu.regex;
 
 /// Backend selection mode
 const BackendMode = enum {
@@ -184,6 +185,8 @@ const FindOptions = struct {
     ipattern: ?[]const u8 = null, // -iname pattern
     path_pattern: ?[]const u8 = null, // -path pattern
     ipath_pattern: ?[]const u8 = null, // -ipath pattern
+    regex_pattern: ?[]const u8 = null, // -regex pattern (matches full path)
+    iregex_pattern: ?[]const u8 = null, // -iregex pattern (case-insensitive)
     // Additional patterns for -o support
     or_patterns: []const OrPattern = &.{},
     file_type: FileType = .any, // -type
@@ -274,6 +277,12 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "-ipath") and i + 1 < args.len) {
             i += 1;
             options.ipath_pattern = args[i];
+        } else if (std.mem.eql(u8, arg, "-regex") and i + 1 < args.len) {
+            i += 1;
+            options.regex_pattern = args[i];
+        } else if (std.mem.eql(u8, arg, "-iregex") and i + 1 < args.len) {
+            i += 1;
+            options.iregex_pattern = args[i];
         } else if (std.mem.eql(u8, arg, "-type") and i + 1 < args.len) {
             i += 1;
             options.file_type = parseFileType(args[i]) orelse {
@@ -534,11 +543,18 @@ fn findFiles(
     }
 
     // If no pattern specified, just print all collected paths
-    if (options.pattern == null and options.ipattern == null and options.path_pattern == null and options.ipath_pattern == null) {
+    if (options.pattern == null and options.ipattern == null and options.path_pattern == null and options.ipath_pattern == null and options.regex_pattern == null and options.iregex_pattern == null) {
         for (collected_paths.items) |path| {
             printPath(path, options.print0);
         }
         return .{ .count = collected_paths.items.len, .had_error = false };
+    }
+
+    // Handle regex patterns (GPU-accelerated or CPU fallback)
+    if (options.regex_pattern != null or options.iregex_pattern != null) {
+        const regex_pat = options.regex_pattern orelse options.iregex_pattern.?;
+        const case_insensitive = options.iregex_pattern != null;
+        return findFilesWithRegex(allocator, collected_paths.items, regex_pat, case_insensitive, options, backend_mode, verbose);
     }
 
     // Determine pattern and options for matching
@@ -640,6 +656,123 @@ fn findFiles(
         for (result.matches) |match| {
             if (!options.count_only) {
                 printPath(collected_paths.items[match.name_idx], options.print0);
+            }
+            match_count += 1;
+        }
+    }
+
+    return .{ .count = match_count, .had_error = false };
+}
+
+/// Find files using regex pattern matching (GPU-accelerated)
+fn findFilesWithRegex(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+    pattern: []const u8,
+    case_insensitive: bool,
+    options: FindOptions,
+    backend_mode: BackendMode,
+    verbose: bool,
+) FindResult {
+    const use_gpu = switch (backend_mode) {
+        .auto => gpu.shouldUseGpu(paths.len),
+        .gpu_mode, .metal, .vulkan => true,
+        .cpu_mode, .cpu_gnu => false,
+    };
+
+    var match_count: usize = 0;
+
+    // Try GPU regex matching first
+    if (use_gpu and build_options.is_macos and (backend_mode == .auto or backend_mode == .gpu_mode or backend_mode == .metal)) {
+        if (gpu.metal.MetalMatcher.init(allocator)) |matcher| {
+            defer matcher.deinit();
+
+            if (verbose) {
+                std.debug.print("Using Metal backend (regex)\n", .{});
+            }
+
+            const match_opts = gpu.MatchOptions{
+                .case_insensitive = case_insensitive,
+                .match_path = true, // -regex always matches full path
+                .match_period = false,
+            };
+
+            var result = matcher.matchNamesRegex(paths, pattern, match_opts, allocator) catch |err| {
+                if (verbose) {
+                    std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
+                }
+                return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+            };
+            defer result.deinit();
+
+            if (options.negate_pattern) {
+                var matched_set = std.AutoHashMap(u32, void).init(allocator);
+                defer matched_set.deinit();
+                for (result.matches) |match| {
+                    matched_set.put(match.name_idx, {}) catch {};
+                }
+                for (paths, 0..) |path, idx| {
+                    if (!matched_set.contains(@intCast(idx))) {
+                        if (!options.count_only) {
+                            printPath(path, options.print0);
+                        }
+                        match_count += 1;
+                    }
+                }
+            } else {
+                for (result.matches) |match| {
+                    if (!options.count_only) {
+                        printPath(paths[match.name_idx], options.print0);
+                    }
+                    match_count += 1;
+                }
+            }
+
+            return .{ .count = match_count, .had_error = false };
+        } else |_| {
+            if (verbose) {
+                std.debug.print("Metal init failed, falling back to CPU\n", .{});
+            }
+        }
+    }
+
+    // CPU fallback
+    return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+}
+
+/// CPU regex matching fallback
+fn findFilesWithRegexCpu(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+    pattern: []const u8,
+    case_insensitive: bool,
+    options: FindOptions,
+) FindResult {
+    var compiled = regex.Regex.compile(allocator, pattern, .{ .case_insensitive = case_insensitive }) catch {
+        std.debug.print("find: invalid regex pattern\n", .{});
+        return .{ .count = 0, .had_error = true };
+    };
+    defer compiled.deinit();
+
+    var match_count: usize = 0;
+    for (paths) |path| {
+        // GNU find -regex matches the entire path
+        var matched = false;
+        if (compiled.find(path, allocator)) |match_opt| {
+            if (match_opt) |match| {
+                var m = match;
+                defer m.deinit();
+                // Check if match spans entire string
+                if (m.start == 0 and m.end == path.len) {
+                    matched = true;
+                }
+            }
+        } else |_| {}
+
+        const should_output = if (options.negate_pattern) !matched else matched;
+        if (should_output) {
+            if (!options.count_only) {
+                printPath(path, options.print0);
             }
             match_count += 1;
         }

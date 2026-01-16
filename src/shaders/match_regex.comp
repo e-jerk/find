@@ -1,0 +1,293 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// ============================================================================
+// GPU-Accelerated Regex Match for find (Vulkan/GLSL)
+// Thompson NFA execution for regex pattern matching against file paths
+// ============================================================================
+
+#include "string_ops.glsl"
+#include "regex_ops.glsl"
+
+// Match configuration
+struct RegexMatchConfig {
+    uint num_names;
+    uint num_states;
+    uint start_state;
+    uint header_flags;
+    uint num_bitmaps;
+    uint flags;
+    uint _pad1;
+    uint _pad2;
+};
+
+// Match flags (use different names to avoid conflict with regex_ops.glsl)
+const uint FIND_FLAG_CASE_INSENSITIVE = 1u;
+const uint FIND_FLAG_MATCH_PATH = 2u;      // Match full path instead of basename
+
+// Result for each filename
+struct MatchResult {
+    uint name_idx;
+    uint matched;
+    uint _pad1;
+    uint _pad2;
+};
+
+// Buffer bindings
+layout(std430, binding = 0) readonly buffer ConfigBuffer { RegexMatchConfig config; };
+layout(std430, binding = 1) readonly buffer StatesBuffer { uint states[]; };
+layout(std430, binding = 2) readonly buffer BitmapsBuffer { uint bitmaps[]; };
+layout(std430, binding = 3) readonly buffer NamesData { uint names_data[]; };
+layout(std430, binding = 4) readonly buffer NameOffsets { uint name_offsets[]; };
+layout(std430, binding = 5) readonly buffer NameLengths { uint name_lengths[]; };
+layout(std430, binding = 6) writeonly buffer Results { MatchResult results[]; };
+layout(std430, binding = 7) buffer MatchCount { uint match_count; };
+
+// Get byte from names buffer
+uint get_name_byte(uint pos) {
+    uint word_idx = pos >> 2u;
+    uint byte_idx = pos & 3u;
+    return (names_data[word_idx] >> (byte_idx << 3u)) & 0xFFu;
+}
+
+// Find start of basename in path
+uint find_basename_start(uint path_start, uint path_len) {
+    uint start = 0u;
+    for (uint i = 0u; i < path_len; i++) {
+        uint c = get_name_byte(path_start + i);
+        if (c == 47u) { // '/'
+            start = i + 1u;
+        }
+    }
+    return start;
+}
+
+// Add epsilon transitions to state set (iterative, GLSL doesn't support recursion)
+void add_epsilon_closure(inout uint set[8], uint initial_state, uint num_states) {
+    if (initial_state >= num_states) return;
+    if (STATE_SET_CONTAINS(set, initial_state)) return;
+
+    // Use a simple worklist with a fixed-size stack
+    uint stack[32];  // Max depth for epsilon transitions
+    uint stack_top = 0u;
+    stack[stack_top++] = initial_state;
+
+    while (stack_top > 0u) {
+        uint state_idx = stack[--stack_top];
+
+        if (state_idx >= num_states) continue;
+        if (STATE_SET_CONTAINS(set, state_idx)) continue;
+
+        STATE_SET_ADD(set, state_idx);
+
+        uint base = state_idx * 3u;
+        uint word0 = states[base];
+        uint state_type = get_state_type(word0);
+
+        if (state_type == STATE_SPLIT) {
+            uint out1 = get_state_out(word0);
+            uint word1 = states[base + 1u];
+            uint out2 = get_state_out2(word1);
+
+            if (out2 != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = out2;
+            }
+            if (out1 != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = out1;
+            }
+        } else if (state_type == STATE_GROUP_START || state_type == STATE_GROUP_END) {
+            uint next_state = get_state_out(word0);
+            if (next_state != STATE_NONE && stack_top < 31u) {
+                stack[stack_top++] = next_state;
+            }
+        }
+    }
+}
+
+// Perform one step of NFA execution
+void nfa_step(
+    uint current[8],
+    inout uint next_set[8],
+    uint c,
+    uint pos,
+    uint text_len,
+    uint num_states,
+    bool prev_is_word,
+    bool curr_is_word
+) {
+    STATE_SET_CLEAR(next_set);
+
+    for (uint word = 0u; word < 8u; word++) {
+        uint mask = current[word];
+        while (mask != 0u) {
+            uint bit = findLSB(mask);
+            uint state_idx = word * 32u + bit;
+            mask &= mask - 1u;
+
+            if (state_idx >= num_states) continue;
+
+            uint base = state_idx * 3u;
+            uint word0 = states[base];
+            uint word1 = states[base + 1u];
+            uint word2 = states[base + 2u];
+
+            uint state_type = get_state_type(word0);
+            uint state_flags = get_state_flags(word0);
+            uint state_literal = get_state_literal(word1);
+            uint next_state = get_state_out(word0);
+
+            bool matched = false;
+
+            if (state_type == STATE_LITERAL) {
+                bool case_insensitive = (state_flags & STATE_FLAG_CASE_INSENSITIVE) != 0u;
+                if (case_insensitive) {
+                    matched = regex_to_lower(c) == regex_to_lower(state_literal);
+                } else {
+                    matched = c == state_literal;
+                }
+            } else if (state_type == STATE_CHAR_CLASS) {
+                uint bitmap_offset = get_state_bitmap_offset(word2);
+                uint bitmap_word_idx = c >> 5u;
+                uint bitmap_bit = c & 31u;
+                uint bitmap_word = bitmaps[bitmap_offset + bitmap_word_idx];
+                bool in_class = (bitmap_word & (1u << bitmap_bit)) != 0u;
+                bool negated = (state_flags & STATE_FLAG_NEGATED) != 0u;
+                matched = in_class != negated;
+            } else if (state_type == STATE_DOT) {
+                matched = true;  // Match any character in path (including /)
+            } else if (state_type == STATE_ANY) {
+                matched = true;
+            } else if (state_type == STATE_LINE_START) {
+                // For find -regex, ^ matches start of path
+                if (pos == 0u) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_states);
+                    }
+                }
+            } else if (state_type == STATE_LINE_END) {
+                // For find -regex, $ matches end of path
+                if (pos >= text_len) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_states);
+                    }
+                }
+            } else if (state_type == STATE_WORD_BOUNDARY) {
+                if (check_word_boundary(prev_is_word, curr_is_word)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_states);
+                    }
+                }
+            } else if (state_type == STATE_NOT_WORD_BOUNDARY) {
+                if (!check_word_boundary(prev_is_word, curr_is_word)) {
+                    if (next_state != STATE_NONE) {
+                        add_epsilon_closure(next_set, next_state, num_states);
+                    }
+                }
+            }
+
+            if (matched && next_state != STATE_NONE) {
+                add_epsilon_closure(next_set, next_state, num_states);
+            }
+        }
+    }
+}
+
+// Check if any state in set is a match state
+bool has_match_state(uint set[8], uint num_states) {
+    for (uint word = 0u; word < 8u; word++) {
+        uint mask = set[word];
+        while (mask != 0u) {
+            uint bit = findLSB(mask);
+            uint state_idx = word * 32u + bit;
+            mask &= mask - 1u;
+
+            if (state_idx >= num_states) continue;
+
+            uint base = state_idx * 3u;
+            uint word0 = states[base];
+            uint state_type = get_state_type(word0);
+
+            if (state_type == STATE_MATCH) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Execute regex on a path - GNU find -regex matches entire path
+bool regex_match_path(
+    uint path_start,
+    uint path_len,
+    uint num_states,
+    uint start_state
+) {
+    uint current[8];
+    uint next_set[8];
+    STATE_SET_CLEAR(current);
+    add_epsilon_closure(current, start_state, num_states);
+
+    // Check for immediate match (empty pattern matches empty string)
+    if (has_match_state(current, num_states) && path_len == 0u) {
+        return true;
+    }
+
+    bool prev_is_word = false;
+
+    for (uint pos = 0u; pos < path_len; pos++) {
+        uint c = get_name_byte(path_start + pos);
+        bool curr_is_word = regex_is_word_char(c);
+
+        nfa_step(current, next_set, c, pos, path_len, num_states, prev_is_word, curr_is_word);
+
+        STATE_SET_COPY(current, next_set);
+
+        if (STATE_SET_EMPTY(current)) {
+            return false;
+        }
+
+        prev_is_word = curr_is_word;
+    }
+
+    // Must match entire path
+    return has_match_state(current, num_states);
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    if (gid >= config.num_names) return;
+
+    // Get the filename for this thread
+    uint name_offset = name_offsets[gid];
+    uint name_len = name_lengths[gid];
+
+    bool match_path = (config.flags & FIND_FLAG_MATCH_PATH) != 0u;
+
+    // For -regex, match against full path (like GNU find)
+    // For -name with regex, match against basename only
+    uint match_start = name_offset;
+    uint match_len = name_len;
+
+    if (!match_path) {
+        uint basename_start = find_basename_start(name_offset, name_len);
+        match_start = name_offset + basename_start;
+        match_len = name_len - basename_start;
+    }
+
+    bool matched = regex_match_path(
+        match_start,
+        match_len,
+        config.num_states,
+        config.start_state
+    );
+
+    results[gid].name_idx = gid;
+    results[gid].matched = matched ? 1u : 0u;
+
+    if (matched) {
+        atomicAdd(match_count, 1u);
+    }
+}

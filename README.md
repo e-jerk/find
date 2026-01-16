@@ -59,6 +59,11 @@ find . ! -type d
 find . -empty -type f
 find . -empty -type d
 
+# Regex pattern matching (matches full path)
+find . -regex ".*\\.zig"
+find . -regex ".*/src/.*\\.c"
+find . -iregex ".*readme.*"
+
 # Force GPU backend
 find --gpu . -name "*.zig"
 
@@ -73,28 +78,29 @@ find -V . -name "*.js"
 
 ## GNU Feature Compatibility
 
-| Feature | CPU-Optimized | GNU Backend | Metal | Vulkan | Status |
-|---------|:-------------:|:-----------:|:-----:|:------:|--------|
-| `-name` pattern | ✓ | ✓ | ✓ | ✓ | Native |
-| `-iname` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
-| `-path` full path match | ✓ | ✓ | ✓ | ✓ | Native |
-| `-ipath` case insensitive | ✓ | ✓ | ✓ | ✓ | Native |
-| `-type f/d/l/...` | ✓ | ✓ | ✓ | ✓ | Native |
-| `-maxdepth` | ✓ | ✓ | ✓ | ✓ | Native |
-| `-mindepth` | ✓ | ✓ | ✓ | ✓ | Native |
-| `-print0` | ✓ | ✓ | ✓ | ✓ | Native |
-| `-o` (OR patterns) | ✓ | ✓ | — | — | Native (CPU) |
-| `-not` / `!` (negation) | ✓ | ✓ | ✓ | ✓ | Native |
-| `-empty` | ✓ | ✓ | — | — | Native (CPU) |
-| `-size [+-]N[ckMG]` | ✓ | ✓ | — | — | **Native** |
-| `-mtime [+-]N` | ✓ | ✓ | — | — | **Native** |
-| `-atime [+-]N` | ✓ | ✓ | — | — | **Native** |
-| `-ctime [+-]N` | ✓ | ✓ | — | — | **Native** |
-| `-prune PATTERN` | ✓ | ✓ | — | — | **Native** |
-| `-newer FILE` | — | ✓ | — | — | GNU fallback |
-| `-exec` / `-execdir` | — | ✓ | — | — | GNU fallback |
-| `-delete` | — | ✓ | — | — | GNU fallback |
-| `-regex` | — | ✓ | — | — | GNU fallback |
+| Feature | CPU | Metal | Vulkan | GPU Speedup | Status |
+|---------|:---:|:-----:|:------:|:-----------:|--------|
+| `-name` pattern | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-iname` case insensitive | ✓ | ✓ | ✓ | **4.3x** | Native |
+| `-path` full path match | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-ipath` case insensitive | ✓ | ✓ | ✓ | **4.3x** | Native |
+| `-type f/d/l/...` | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-maxdepth` | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-mindepth` | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-print0` | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-not` / `!` (negation) | ✓ | ✓ | ✓ | **3.5x** | Native |
+| `-regex PATTERN` | ✓ | — | — | CPU only | **Native** |
+| `-iregex PATTERN` | ✓ | — | — | CPU only | **Native** |
+| `-o` (OR patterns) | ✓ | — | — | CPU only | Native |
+| `-empty` | ✓ | — | — | CPU only | Native |
+| `-size [+-]N[ckMG]` | ✓ | — | — | CPU only | **Native** |
+| `-mtime [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-atime [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-ctime [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-prune PATTERN` | ✓ | — | — | CPU only | **Native** |
+| `-newer FILE` | — | — | — | — | GNU fallback |
+| `-exec` / `-execdir` | — | — | — | — | GNU fallback |
+| `-delete` | — | — | — | — | GNU fallback |
 
 **Test Coverage**: 36/36 GNU compatibility tests passing
 
@@ -148,6 +154,8 @@ find -V . -name "*.js"
 | `-atime [+-]N` | Filter by access time (days) |
 | `-ctime [+-]N` | Filter by status change time (days) |
 | `-prune PATTERN` | Skip directories matching pattern |
+| `-regex PATTERN` | Match full path against regex |
+| `-iregex PATTERN` | Case-insensitive regex match |
 | `-empty` | Match empty files/directories |
 | `-not`, `!` | Negate following test |
 | `-o` | OR multiple patterns |
@@ -290,6 +298,7 @@ bash gnu-tests.sh   # GNU compatibility tests (36 tests)
 
 ## Recent Changes
 
+- **Regex Support**: Native `-regex` and `-iregex` for full-path regex matching (GNU find compatible)
 - **Size Filter**: Native `-size [+-]N[ckMG]` support for filtering by file size
 - **Time Filters**: Native `-mtime`, `-atime`, `-ctime` with `[+-]N` syntax
 - **Prune**: Native `-prune PATTERN` to skip directories matching glob patterns

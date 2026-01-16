@@ -36,26 +36,49 @@ pub fn build(b: *std.Build) void {
     // Shared shader library
     const shaders_common = b.dependency("shaders_common", .{});
 
-    // Compile SPIR-V shader from GLSL for Vulkan
+    // Regex library for pattern compilation
+    const regex_dep = b.dependency("regex", .{});
+    const regex_module = regex_dep.module("regex");
+
+    // Compile SPIR-V shader from GLSL for Vulkan (glob matching)
     const spirv_compile = b.addSystemCommand(&.{
         "glslc",
         "--target-env=vulkan1.2",
         "-O",
     });
-    // Add include path for shared GLSL headers
     spirv_compile.addArg("-I");
     spirv_compile.addDirectoryArg(shaders_common.path("glsl"));
     spirv_compile.addArg("-o");
     const spirv_output = spirv_compile.addOutputFileArg("match.spv");
     spirv_compile.addFileArg(b.path("src/shaders/match.comp"));
 
-    // Create embedded SPIR-V module
+    // Compile SPIR-V regex shader from GLSL for Vulkan
+    const spirv_regex_compile = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.2",
+        "-O",
+    });
+    spirv_regex_compile.addArg("-I");
+    spirv_regex_compile.addDirectoryArg(shaders_common.path("glsl"));
+    spirv_regex_compile.addArg("-o");
+    const spirv_regex_output = spirv_regex_compile.addOutputFileArg("match_regex.spv");
+    spirv_regex_compile.addFileArg(b.path("src/shaders/match_regex.comp"));
+
+    // Create embedded SPIR-V module (glob)
     const spirv_module = b.addModule("spirv", .{
         .root_source_file = b.addWriteFiles().add("spirv.zig",
             \\pub const EMBEDDED_SPIRV = @embedFile("match.spv");
         ),
     });
     spirv_module.addAnonymousImport("match.spv", .{ .root_source_file = spirv_output });
+
+    // Create embedded SPIR-V regex module
+    const spirv_regex_module = b.addModule("spirv_regex", .{
+        .root_source_file = b.addWriteFiles().add("spirv_regex.zig",
+            \\pub const EMBEDDED_SPIRV_REGEX = @embedFile("match_regex.spv");
+        ),
+    });
+    spirv_regex_module.addAnonymousImport("match_regex.spv", .{ .root_source_file = spirv_regex_output });
 
     // Preprocess Metal shader to inline the string_ops.h include
     // Concatenates: header + shader (with include line removed)
@@ -84,8 +107,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = build_options_module },
             .{ .name = "vulkan", .module = vulkan_module },
             .{ .name = "spirv", .module = spirv_module },
+            .{ .name = "spirv_regex", .module = spirv_regex_module },
             .{ .name = "metal_shader", .module = metal_module },
             .{ .name = "e_jerk_gpu", .module = e_jerk_gpu_module },
+            .{ .name = "regex", .module = regex_module },
         },
     });
 
