@@ -138,29 +138,108 @@ find -V . -name "*.js"
 | `-N` | Within the last N days |
 | `N` | Exactly N days ago |
 
-## Options
+## Command Line Reference
 
-| Flag | Description |
-|------|-------------|
-| `-name PATTERN` | Match basename against pattern |
-| `-iname PATTERN` | Case-insensitive basename match |
-| `-path PATTERN` | Match full path against pattern |
-| `-ipath PATTERN` | Case-insensitive path match |
-| `-type TYPE` | File type (f=file, d=dir, l=link, etc.) |
-| `-maxdepth N` | Max directory depth |
-| `-mindepth N` | Min directory depth |
-| `-size [+-]N[ckMG]` | Filter by file size |
-| `-mtime [+-]N` | Filter by modification time (days) |
-| `-atime [+-]N` | Filter by access time (days) |
-| `-ctime [+-]N` | Filter by status change time (days) |
-| `-prune PATTERN` | Skip directories matching pattern |
-| `-regex PATTERN` | Match full path against regex |
-| `-iregex PATTERN` | Case-insensitive regex match |
-| `-empty` | Match empty files/directories |
-| `-not`, `!` | Negate following test |
-| `-o` | OR multiple patterns |
-| `-print0` | Null-terminated output |
-| `-V, --verbose` | Show timing and backend info |
+<details>
+<summary>Full --help output</summary>
+
+```
+Usage: find [-H] [-L] [-P] [path...] [expression]
+
+GPU-accelerated file search in directory hierarchies.
+Default path is current directory. Use - to read paths from stdin.
+
+Tests (Pattern Matching):                        [GPU+SIMD]
+  -name PATTERN     Base of file name matches shell PATTERN
+  -iname PATTERN    Like -name but case-insensitive
+  -path PATTERN     File path matches shell PATTERN
+  -ipath PATTERN    Like -path but case-insensitive
+
+Tests (File Type):                               [CPU]
+  -type TYPE        File is of type TYPE:
+                      f  regular file
+                      d  directory
+                      l  symbolic link
+                      b  block device
+                      c  character device
+                      p  named pipe (FIFO)
+                      s  socket
+
+Tests (File Attributes):                         [CPU]
+  -empty             File is empty (0 size for files, no entries for dirs)
+  -size [+-]N[ckMG]  File uses N units of space:
+                      c  bytes, k  kibibytes, M  mebibytes, G  gibibytes
+                      (default: 512-byte blocks)
+                      +N  greater than N, -N  less than N
+  -mtime [+-]N       File modified N*24 hours ago (+N older, -N newer)
+  -atime [+-]N       File accessed N*24 hours ago
+  -ctime [+-]N       File status changed N*24 hours ago
+
+Actions:
+  -prune PATTERN     Do not descend into directories matching PATTERN
+
+Operators:
+  -not, !            Negate the following test
+
+Options:
+  -maxdepth LEVELS  Descend at most LEVELS of directories
+  -mindepth LEVELS  Skip tests at levels less than LEVELS
+  -print0           Print paths followed by NUL instead of newline
+  -count            Print count of matches (extension)
+
+Backend Selection:
+  --auto            Auto-select optimal backend (default)
+  --gpu             Force GPU (Metal on macOS, Vulkan on Linux)
+  --cpu             Force CPU backend (SIMD-optimized)
+  --metal           Force Metal backend (macOS only)
+  --vulkan          Force Vulkan backend
+
+Miscellaneous:
+  -v, --verbose     Print backend and timing information
+  -h, --help        Display this help and exit
+      --version     Output version information and exit
+
+Pattern Wildcards:                               [GPU+SIMD]
+  *      matches any string (including empty)
+  ?      matches any single character
+  [abc]  matches any character in the set
+  [a-z]  matches any character in the range
+  [!abc] matches any character NOT in the set
+
+Optimization Notes:
+  [GPU+SIMD] Pattern matching uses GPU compute shaders (Metal/Vulkan)
+             for parallel glob evaluation. CPU fallback uses 16/32-byte
+             SIMD vector operations for accelerated string comparison.
+  [CPU]      File type and attribute tests require filesystem syscalls
+             and cannot be GPU-accelerated.
+
+Performance (typical GPU speedups over CPU):
+  10K files:   ~4x faster
+  100K files:  ~7x faster
+  1M files:    ~10x faster
+
+Examples:
+  find . -name '*.txt'              Find all .txt files
+  find . -iname '*.jpg'             Case-insensitive search
+  find /var/log -type f -name '*.log'
+                                    Find log files
+  find . -name '*.c' -print0 | xargs -0 grep 'TODO'
+                                    Combine with xargs
+  echo '/home /var' | find - -name '*.conf'
+                                    Read paths from stdin
+  find --gpu . -name '*.rs'         Force GPU backend
+```
+
+</details>
+
+## Build Variants
+
+| Variant | Description | Vulkan on macOS | `--gnu` flag |
+|---------|-------------|-----------------|--------------|
+| **pure** | Zig + SIMD + GPU only. No external dependencies. | No | Not available |
+| **gnu** | Includes GNU find + Vulkan via MoltenVK. | Yes | Falls back to GNU find |
+
+The gnu build enables Vulkan on macOS using MoltenVK, allowing both Metal and Vulkan backends on Mac.
 
 ## Backend Selection
 
@@ -168,10 +247,10 @@ find -V . -name "*.js"
 |------|-------------|
 | `--auto` | Automatically select optimal backend (default) |
 | `--gpu` | Use GPU (Metal on macOS, Vulkan elsewhere) |
-| `--cpu` | Force CPU backend |
-| `--gnu` | Force GNU find backend |
+| `--cpu` | Force CPU backend (SIMD-optimized) |
+| `--gnu` | Force GNU find backend (gnu build only) |
 | `--metal` | Force Metal backend (macOS only) |
-| `--vulkan` | Force Vulkan backend |
+| `--vulkan` | Force Vulkan backend (macOS+gnu build, or Linux) |
 
 ## Architecture & Optimizations
 

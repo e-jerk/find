@@ -1016,14 +1016,16 @@ fn printUsage() void {
     const help_text =
         \\Usage: find [-H] [-L] [-P] [path...] [expression]
         \\
-        \\Search for files in a directory hierarchy.
-        \\Default path is the current directory. Use - to read paths from stdin.
+        \\GPU-accelerated file search in directory hierarchies.
+        \\Default path is current directory. Use - to read paths from stdin.
         \\
-        \\Tests:
+        \\Tests (Pattern Matching):                        [GPU+SIMD]
         \\  -name PATTERN     Base of file name matches shell PATTERN
         \\  -iname PATTERN    Like -name but case-insensitive
         \\  -path PATTERN     File path matches shell PATTERN
         \\  -ipath PATTERN    Like -path but case-insensitive
+        \\
+        \\Tests (File Type):                               [CPU]
         \\  -type TYPE        File is of type TYPE:
         \\                      f  regular file
         \\                      d  directory
@@ -1032,19 +1034,16 @@ fn printUsage() void {
         \\                      c  character device
         \\                      p  named pipe (FIFO)
         \\                      s  socket
+        \\
+        \\Tests (File Attributes):                         [CPU]
         \\  -empty             File is empty (0 size for files, no entries for dirs)
         \\  -size [+-]N[ckMG]  File uses N units of space:
-        \\                      c  bytes
-        \\                      k  kibibytes (1024 bytes)
-        \\                      M  mebibytes (1024^2 bytes)
-        \\                      G  gibibytes (1024^3 bytes)
+        \\                      c  bytes, k  kibibytes, M  mebibytes, G  gibibytes
         \\                      (default: 512-byte blocks)
         \\                      +N  greater than N, -N  less than N
-        \\  -mtime [+-]N       File's data was modified N*24 hours ago
-        \\                      +N  more than N days ago (older)
-        \\                      -N  less than N days ago (newer)
-        \\  -atime [+-]N       File was last accessed N*24 hours ago
-        \\  -ctime [+-]N       File's status was last changed N*24 hours ago
+        \\  -mtime [+-]N       File modified N*24 hours ago (+N older, -N newer)
+        \\  -atime [+-]N       File accessed N*24 hours ago
+        \\  -ctime [+-]N       File status changed N*24 hours ago
         \\
         \\Actions:
         \\  -prune PATTERN     Do not descend into directories matching PATTERN
@@ -1054,33 +1053,40 @@ fn printUsage() void {
         \\
         \\Options:
         \\  -maxdepth LEVELS  Descend at most LEVELS of directories
-        \\  -mindepth LEVELS  Do not apply tests or actions at levels less than LEVELS
+        \\  -mindepth LEVELS  Skip tests at levels less than LEVELS
         \\  -print0           Print paths followed by NUL instead of newline
-        \\  -count            Print count of matches (custom extension)
+        \\  -count            Print count of matches (extension)
         \\
-        \\GPU Backend selection:
-        \\  --auto            auto-select optimal backend (default)
-        \\  --gpu             force GPU (Metal on macOS, Vulkan on Linux)
-        \\  --cpu             force CPU backend
-        \\  --metal           force Metal backend (macOS only)
-        \\  --vulkan          force Vulkan backend
+        \\Backend Selection:
+        \\  --auto            Auto-select optimal backend (default)
+        \\  --gpu             Force GPU (Metal on macOS, Vulkan on Linux)
+        \\  --cpu             Force CPU backend (SIMD-optimized)
+        \\  --metal           Force Metal backend (macOS only)
+        \\  --vulkan          Force Vulkan backend
         \\
         \\Miscellaneous:
-        \\  -v, --verbose     print backend and timing information
-        \\  -h, --help        display this help and exit
-        \\      --version     output version information and exit
+        \\  -v, --verbose     Print backend and timing information
+        \\  -h, --help        Display this help and exit
+        \\      --version     Output version information and exit
         \\
-        \\Pattern wildcards:
-        \\  *      matches any string
+        \\Pattern Wildcards:                               [GPU+SIMD]
+        \\  *      matches any string (including empty)
         \\  ?      matches any single character
         \\  [abc]  matches any character in the set
         \\  [a-z]  matches any character in the range
         \\  [!abc] matches any character NOT in the set
         \\
-        \\GPU Performance (typical speedups vs CPU):
-        \\  10K files:   ~4x
-        \\  100K files:  ~7x
-        \\  1M files:    ~10x
+        \\Optimization Notes:
+        \\  [GPU+SIMD] Pattern matching uses GPU compute shaders (Metal/Vulkan)
+        \\             for parallel glob evaluation. CPU fallback uses 16/32-byte
+        \\             SIMD vector operations for accelerated string comparison.
+        \\  [CPU]      File type and attribute tests require filesystem syscalls
+        \\             and cannot be GPU-accelerated.
+        \\
+        \\Performance (typical GPU speedups over CPU):
+        \\  10K files:   ~4x faster
+        \\  100K files:  ~7x faster
+        \\  1M files:    ~10x faster
         \\
         \\Examples:
         \\  find . -name '*.txt'              Find all .txt files
