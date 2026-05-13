@@ -206,6 +206,15 @@ const FindOptions = struct {
     user_name: ?[]const u8 = null, // -user NAME
     group_name: ?[]const u8 = null, // -group NAME
     perm_mode: ?[]const u8 = null, // -perm MODE
+    follow_symlinks: bool = false, // -follow / -L
+    depth_first: bool = false, // -depth
+    stay_on_filesystem: bool = false, // -mount / -xdev
+    links_count: ?u32 = null, // -links N
+    always_true: bool = false, // -true
+    always_false: bool = false, // -false
+    quit_after_first: bool = false, // -quit
+    printf_format: ?[]const u8 = null, // -printf FORMAT
+    start_device: ?u64 = null, // Device ID of start path for -mount
 };
 
 const OrPattern = struct {
@@ -357,6 +366,27 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "-perm") and i + 1 < args.len) {
             i += 1;
             options.perm_mode = args[i];
+        } else if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "-L")) {
+            options.follow_symlinks = true;
+        } else if (std.mem.eql(u8, arg, "-depth")) {
+            options.depth_first = true;
+        } else if (std.mem.eql(u8, arg, "-mount") or std.mem.eql(u8, arg, "-xdev")) {
+            options.stay_on_filesystem = true;
+        } else if (std.mem.eql(u8, arg, "-links") and i + 1 < args.len) {
+            i += 1;
+            options.links_count = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("Invalid -links value: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-true")) {
+            options.always_true = true;
+        } else if (std.mem.eql(u8, arg, "-false")) {
+            options.always_false = true;
+        } else if (std.mem.eql(u8, arg, "-quit")) {
+            options.quit_after_first = true;
+        } else if (std.mem.eql(u8, arg, "-printf") and i + 1 < args.len) {
+            i += 1;
+            options.printf_format = args[i];
         } else if (std.mem.eql(u8, arg, "-exec")) {
             // Collect command and args until ; or +
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
@@ -525,6 +555,8 @@ fn parseFileType(s: []const u8) ?FileType {
     };
 }
 
+var g_quit_requested = false;
+
 fn findFiles(
     allocator: std.mem.Allocator,
     start_path: []const u8,
@@ -546,10 +578,29 @@ fn findFiles(
         return .{ .count = 0, .had_error = true };
     };
 
+    // Get start device for -mount/-xdev
+    var options_with_device = options;
+    if (options.stay_on_filesystem) {
+        const c_path = allocator.dupeZ(u8, start_path) catch null;
+        if (c_path) |cp| {
+            defer allocator.free(cp);
+            var st: std.posix.Stat = undefined;
+            if (std.c.stat(cp, &st) == 0) {
+                options_with_device.start_device = @intCast(st.dev);
+            }
+        }
+    }
+
+    g_quit_requested = false;
+
     // Collect all file paths first
-    walkDirectory(allocator, start_path, options, &collected_paths, 0) catch |err| {
-        std.debug.print("find: error walking '{s}': {}\n", .{ start_path, err });
-        return .{ .count = 0, .had_error = true };
+    walkDirectory(allocator, start_path, options_with_device, &collected_paths, 0) catch |err| {
+        if (err == error.QuitRequested) {
+            // Normal exit after -quit
+        } else {
+            std.debug.print("find: error walking '{s}': {}\n", .{ start_path, err });
+            return .{ .count = 0, .had_error = true };
+        }
     };
 
     if (verbose) {
@@ -875,6 +926,105 @@ fn findFilesWithRegexCpu(
     return .{ .count = match_count, .had_error = false };
 }
 
+const QuitError = error{QuitRequested};
+
+/// Check if a file/directory passes all metadata filters
+fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
+    _ = path; // Path available for future filters that need the string
+    const passes_type_filter = switch (options.file_type) {
+        .any => true,
+        .file => stat.kind == .file,
+        .directory => stat.kind == .directory,
+        .symlink => stat.kind == .sym_link,
+        .block_device => stat.kind == .block_device,
+        .char_device => stat.kind == .character_device,
+        .fifo => stat.kind == .named_pipe,
+        .socket => stat.kind == .unix_domain_socket,
+    };
+
+    // Check -empty: file is empty if size == 0, dir is empty if no entries
+    var passes_empty_filter = true;
+    if (options.empty_only) {
+        passes_empty_filter = (stat.kind == .file and stat.size == 0) or (stat.kind == .directory);
+    }
+    if (options.negate_pattern and options.empty_only) {
+        passes_empty_filter = !passes_empty_filter;
+    }
+
+    // Check -size filter
+    const passes_size_filter = if (options.size_filter) |sf|
+        sf.matches(@intCast(stat.size))
+    else
+        true;
+
+    // Check -mtime/-atime/-ctime filter
+    const passes_time_filter = if (options.time_filter) |tf| blk: {
+        const now = std.time.timestamp();
+        const ns_per_sec: i128 = 1_000_000_000;
+        const file_time: i64 = @intCast(switch (tf.time_type) {
+            .modified => @divFloor(stat.mtime, ns_per_sec),
+            .accessed => @divFloor(stat.atime, ns_per_sec),
+            .changed => @divFloor(stat.ctime, ns_per_sec),
+        });
+        break :blk tf.matches(file_time, now);
+    } else true;
+
+    // Check -newer filter
+    const passes_newer_filter = if (options.newer_than) |ref_path| blk: {
+        const ref_stat = std.fs.cwd().statFile(ref_path) catch {
+            break :blk false;
+        };
+        break :blk stat.mtime > ref_stat.mtime;
+    } else true;
+
+    // Check -user filter
+    const passes_user_filter = if (options.user_name) |uname| blk: {
+        if (posix_stat == null) break :blk false;
+        const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
+            const c_uname = std.heap.page_allocator.dupeZ(u8, uname) catch { break :blk false; };
+            defer std.heap.page_allocator.free(c_uname);
+            const pw = std.c.getpwnam(c_uname);
+            if (pw == null) break :blk false;
+            break :blk posix_stat.?.uid == pw.?.uid;
+        };
+        break :blk posix_stat.?.uid == target_uid;
+    } else true;
+
+    // Check -group filter
+    const passes_group_filter = if (options.group_name) |gname| blk: {
+        if (posix_stat == null) break :blk false;
+        const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
+            const c_gname = std.heap.page_allocator.dupeZ(u8, gname) catch { break :blk false; };
+            defer std.heap.page_allocator.free(c_gname);
+            const gr = std.c.getgrnam(c_gname);
+            if (gr == null) break :blk false;
+            break :blk posix_stat.?.gid == gr.?.gid;
+        };
+        break :blk posix_stat.?.gid == target_gid;
+    } else true;
+
+    // Check -perm filter
+    const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
+        if (posix_stat == null) break :blk false;
+        const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
+            break :blk false;
+        };
+        break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
+    } else true;
+
+    // Check -links filter
+    const passes_links_filter = if (options.links_count) |n| blk: {
+        if (posix_stat == null) break :blk false;
+        break :blk posix_stat.?.nlink == n;
+    } else true;
+
+    // Check -true / -false
+    if (options.always_false) return false;
+    // -true doesn't override other filters, it just adds no constraint
+
+    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter;
+}
+
 fn walkDirectory(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -882,6 +1032,8 @@ fn walkDirectory(
     collected: *std.ArrayListUnmanaged([]const u8),
     depth: usize,
 ) !void {
+    if (g_quit_requested) return error.QuitRequested;
+
     // Check max depth
     if (options.max_depth) |max| {
         if (depth > max) return;
@@ -897,56 +1049,7 @@ fn walkDirectory(
                     return stat_err;
                 };
 
-                const passes_type_filter = switch (options.file_type) {
-                    .any => true,
-                    .file => stat.kind == .file,
-                    .directory => false,
-                    .symlink => stat.kind == .sym_link,
-                    .block_device => stat.kind == .block_device,
-                    .char_device => stat.kind == .character_device,
-                    .fifo => stat.kind == .named_pipe,
-                    .socket => stat.kind == .unix_domain_socket,
-                };
-
-                // Check -empty: file is empty if size == 0
-                var passes_empty_filter = if (options.empty_only)
-                    (stat.kind == .file and stat.size == 0)
-                else
-                    true;
-                // Apply negation to empty filter if -not was specified
-                if (options.negate_pattern and options.empty_only) {
-                    passes_empty_filter = !passes_empty_filter;
-                }
-
-                // Check -size filter
-                const passes_size_filter = if (options.size_filter) |sf|
-                    sf.matches(@intCast(stat.size))
-                else
-                    true;
-
-                // Check -mtime/-atime/-ctime filter
-                const passes_time_filter = if (options.time_filter) |tf| blk: {
-                    const now = std.time.timestamp();
-                    // stat times are in nanoseconds on macOS, convert to seconds
-                    const ns_per_sec: i128 = 1_000_000_000;
-                    const file_time: i64 = @intCast(switch (tf.time_type) {
-                        .modified => @divFloor(stat.mtime, ns_per_sec),
-                        .accessed => @divFloor(stat.atime, ns_per_sec),
-                        .changed => @divFloor(stat.ctime, ns_per_sec),
-                    });
-                    break :blk tf.matches(file_time, now);
-                } else true;
-
-                // Check -newer filter
-                const passes_newer_filter = if (options.newer_than) |ref_path| blk: {
-                    const ref_stat = std.fs.cwd().statFile(ref_path) catch {
-                        break :blk false;
-                    };
-                    break :blk stat.mtime > ref_stat.mtime;
-                } else true;
-
-                // Get POSIX stat for uid/gid/mode (not available in std.fs.File.Stat on macOS)
-                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null;
+                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
                 const posix_stat = if (need_posix_stat) blk: {
                     const c_path = allocator.dupeZ(u8, path) catch break :blk null;
                     defer allocator.free(c_path);
@@ -955,47 +1058,12 @@ fn walkDirectory(
                     break :blk st;
                 } else null;
 
-                // Check -user filter
-                const passes_user_filter = if (options.user_name) |uname| blk: {
-                    if (posix_stat == null) break :blk false;
-                    const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
-                        const c_uname = allocator.dupeZ(u8, uname) catch {
-                            break :blk false;
-                        };
-                        defer allocator.free(c_uname);
-                        const pw = std.c.getpwnam(c_uname);
-                        if (pw == null) break :blk false;
-                        break :blk posix_stat.?.uid == pw.?.uid;
-                    };
-                    break :blk posix_stat.?.uid == target_uid;
-                } else true;
-
-                // Check -group filter
-                const passes_group_filter = if (options.group_name) |gname| blk: {
-                    if (posix_stat == null) break :blk false;
-                    const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
-                        const c_gname = allocator.dupeZ(u8, gname) catch {
-                            break :blk false;
-                        };
-                        defer allocator.free(c_gname);
-                        const gr = std.c.getgrnam(c_gname);
-                        if (gr == null) break :blk false;
-                        break :blk posix_stat.?.gid == gr.?.gid;
-                    };
-                    break :blk posix_stat.?.gid == target_gid;
-                } else true;
-
-                // Check -perm filter
-                const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
-                    if (posix_stat == null) break :blk false;
-                    const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
-                        break :blk false;
-                    };
-                    break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
-                } else true;
-
-                if (passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter) {
+                if (passesFilters(path, stat, posix_stat, options)) {
                     try collected.append(allocator, try allocator.dupe(u8, path));
+                    if (options.quit_after_first) {
+                        g_quit_requested = true;
+                        return error.QuitRequested;
+                    }
                 }
             }
             return;
@@ -1006,16 +1074,26 @@ fn walkDirectory(
     defer dir.close();
 
     // Check -prune: if this directory matches the prune pattern, skip it entirely
-    // Don't add it to results and don't recurse into it
     if (options.prune_pattern) |prune_pat| {
         const basename = std.fs.path.basename(path);
         if (matchGlob(basename, prune_pat, false)) {
-            // Directory matches prune pattern - skip it entirely
             return;
         }
     }
 
-    // Recurse into directory contents (need to do this first for -empty check)
+    // Check -mount: don't descend into directories on different filesystems
+    if (options.stay_on_filesystem and options.start_device != null) {
+        const c_path = allocator.dupeZ(u8, path) catch return;
+        defer allocator.free(c_path);
+        var st: std.posix.Stat = undefined;
+        if (std.c.stat(c_path, &st) == 0) {
+            if (@as(u64, @intCast(st.dev)) != options.start_device.?) {
+                return; // Different filesystem, skip
+            }
+        }
+    }
+
+    // Recurse into directory contents
     var iter = dir.iterate();
     var has_entries = false;
     var children: std.ArrayListUnmanaged([]const u8) = .{};
@@ -1030,32 +1108,46 @@ fn walkDirectory(
         try children.append(allocator, child_path);
     }
 
-    // It's a directory - add it if it passes filters
-    if (depth >= options.min_depth) {
-        const passes_type_filter = switch (options.file_type) {
-            .any => true,
-            .directory => true,
-            else => false,
-        };
-
-        // Check -empty: directory is empty if it has no entries
-        var passes_empty_filter = if (options.empty_only)
-            !has_entries
-        else
-            true;
-        // Apply negation to empty filter if -not was specified
-        if (options.negate_pattern and options.empty_only) {
-            passes_empty_filter = !passes_empty_filter;
-        }
-
-        if (passes_type_filter and passes_empty_filter) {
-            try collected.append(allocator, try allocator.dupe(u8, path));
+    // With -depth, recurse into children BEFORE adding the directory
+    if (options.depth_first) {
+        for (children.items) |child_path| {
+            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            if (g_quit_requested) return error.QuitRequested;
         }
     }
 
-    // Recurse into children
-    for (children.items) |child_path| {
-        try walkDirectory(allocator, child_path, options, collected, depth + 1);
+    // It's a directory - add it if it passes filters
+    if (depth >= options.min_depth) {
+        // For directories, we need to check filters. statFile works on directories too.
+        const stat = std.fs.cwd().statFile(path) catch |stat_err| {
+            if (stat_err == error.FileNotFound) return;
+            return stat_err;
+        };
+
+        const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
+        const posix_stat = if (need_posix_stat) blk: {
+            const c_path = allocator.dupeZ(u8, path) catch break :blk null;
+            defer allocator.free(c_path);
+            var st: std.posix.Stat = undefined;
+            if (std.c.stat(c_path, &st) != 0) break :blk null;
+            break :blk st;
+        } else null;
+
+        if (passesFilters(path, stat, posix_stat, options)) {
+            try collected.append(allocator, try allocator.dupe(u8, path));
+            if (options.quit_after_first) {
+                g_quit_requested = true;
+                return error.QuitRequested;
+            }
+        }
+    }
+
+    // Without -depth, recurse into children AFTER adding the directory
+    if (!options.depth_first) {
+        for (children.items) |child_path| {
+            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            if (g_quit_requested) return error.QuitRequested;
+        }
     }
 }
 
@@ -1076,6 +1168,89 @@ fn deletePath(path: []const u8) void {
     };
 }
 
+/// Print formatted output according to GNU find -printf FORMAT string
+fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    defer output.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < format.len) : (i += 1) {
+        if (format[i] == '%' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'p' => output.appendSlice(allocator, path) catch {},
+                'f' => output.appendSlice(allocator, std.fs.path.basename(path)) catch {},
+                'd' => {
+                    const dirname = std.fs.path.dirname(path);
+                    output.appendSlice(allocator, dirname orelse ".") catch {};
+                },
+                'n' => output.append(allocator, '\n') catch {},
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                'a' => output.append(allocator, '\x07') catch {},
+                'b' => output.append(allocator, '\x08') catch {},
+                'c' => output.append(allocator, ' ') catch {},
+                '0'...'7' => {
+                    // Octal escape: \0NNN where NNN is 1-3 octal digits
+                    var octal_val: u8 = 0;
+                    var j: usize = 0;
+                    while (j < 3 and i + j < format.len and format[i + j] >= '0' and format[i + j] <= '7') : (j += 1) {
+                        octal_val = octal_val * 8 + (format[i + j] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '%') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                '%' => output.append(allocator, '%') catch {},
+                '\\' => output.append(allocator, '\\') catch {},
+                else => {
+                    output.append(allocator, '%') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else if (format[i] == '\\' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'n' => output.append(allocator, '\n') catch {},
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                'a' => output.append(allocator, '\x07') catch {},
+                'b' => output.append(allocator, '\x08') catch {},
+                'c' => output.append(allocator, ' ') catch {},
+                'f' => output.append(allocator, '\x0c') catch {},
+                '0'...'7' => {
+                    var octal_val: u8 = 0;
+                    var j: usize = 0;
+                    while (j < 3 and i + j < format.len and format[i + j] >= '0' and format[i + j] <= '7') : (j += 1) {
+                        octal_val = octal_val * 8 + (format[i + j] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '\\') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                else => {
+                    output.append(allocator, '\\') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else {
+            output.append(allocator, format[i]) catch {};
+        }
+    }
+
+    _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
+}
+
 fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
     if (options.delete_matched) {
         deletePath(path);
@@ -1094,6 +1269,8 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             var child = std.process.Child.init(child_args.items, allocator);
             _ = child.spawnAndWait() catch {};
         }
+    } else if (options.printf_format) |fmt| {
+        printFormatted(path, fmt, allocator);
     } else {
         printPath(path, options.print0);
     }
