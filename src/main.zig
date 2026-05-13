@@ -199,6 +199,9 @@ const FindOptions = struct {
     size_filter: ?SizeFilter = null, // -size filter
     time_filter: ?TimeFilter = null, // -mtime/-atime/-ctime filter
     prune_pattern: ?[]const u8 = null, // -prune pattern (skip directories matching this)
+    delete_matched: bool = false, // -delete
+    exec_command: ?[]const []const u8 = null, // -exec command args ;
+    exec_plus: bool = false, // -exec command {} +
 };
 
 const OrPattern = struct {
@@ -336,6 +339,27 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "-prune") and i + 1 < args.len) {
             i += 1;
             options.prune_pattern = args[i];
+        } else if (std.mem.eql(u8, arg, "-delete")) {
+            options.delete_matched = true;
+        } else if (std.mem.eql(u8, arg, "-exec")) {
+            // Collect command and args until ; or +
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    options.exec_plus = false;
+                    break;
+                } else if (std.mem.eql(u8, exec_arg, "+")) {
+                    options.exec_plus = true;
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.exec_command = try exec_args.toOwnedSlice(allocator);
+            }
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             backend_mode = .cpu_mode;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -532,12 +556,12 @@ fn findFiles(
             }
             // Apply negation if -not was specified
             const should_output = if (options.negate_pattern) !matches else matches;
-            if (should_output) {
-                if (!options.count_only) {
-                    printPath(path, options.print0);
+                if (should_output) {
+                    if (!options.count_only) {
+                        performAction(path, options, allocator);
+                    }
+                    match_count += 1;
                 }
-                match_count += 1;
-            }
         }
         return .{ .count = match_count, .had_error = false };
     }
@@ -545,7 +569,7 @@ fn findFiles(
     // If no pattern specified, just print all collected paths
     if (options.pattern == null and options.ipattern == null and options.path_pattern == null and options.ipath_pattern == null and options.regex_pattern == null and options.iregex_pattern == null) {
         for (collected_paths.items) |path| {
-            printPath(path, options.print0);
+            performAction(path, options, allocator);
         }
         return .{ .count = collected_paths.items.len, .had_error = false };
     }
@@ -598,7 +622,7 @@ fn findFiles(
                 for (collected_paths.items, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -606,7 +630,7 @@ fn findFiles(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(collected_paths.items[match.name_idx], options.print0);
+                        performAction(collected_paths.items[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -647,7 +671,7 @@ fn findFiles(
         for (collected_paths.items, 0..) |path, idx| {
             if (!matched_set.contains(@intCast(idx))) {
                 if (!options.count_only) {
-                    printPath(path, options.print0);
+                    performAction(path, options, allocator);
                 }
                 match_count += 1;
             }
@@ -655,7 +679,7 @@ fn findFiles(
     } else {
         for (result.matches) |match| {
             if (!options.count_only) {
-                printPath(collected_paths.items[match.name_idx], options.print0);
+                performAction(collected_paths.items[match.name_idx], options, allocator);
             }
             match_count += 1;
         }
@@ -714,7 +738,7 @@ fn findFilesWithRegex(
                 for (paths, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -722,7 +746,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(paths[match.name_idx], options.print0);
+                        performAction(paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -768,7 +792,7 @@ fn findFilesWithRegex(
                 for (paths, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -776,7 +800,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(paths[match.name_idx], options.print0);
+                        performAction(paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -826,7 +850,7 @@ fn findFilesWithRegexCpu(
         const should_output = if (options.negate_pattern) !matched else matched;
         if (should_output) {
             if (!options.count_only) {
-                printPath(path, options.print0);
+                performAction(path, options, allocator);
             }
             match_count += 1;
         }
@@ -963,12 +987,42 @@ fn walkDirectory(
 }
 
 fn printPath(path: []const u8, print0: bool) void {
-    const handle: std.posix.fd_t = std.posix.STDOUT_FILENO;
-    _ = std.posix.write(handle, path) catch {};
     if (print0) {
-        _ = std.posix.write(handle, &[_]u8{0}) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, &[_]u8{0}) catch {};
     } else {
-        _ = std.posix.write(handle, "\n") catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+    }
+}
+
+fn deletePath(path: []const u8) void {
+    // Try to delete as file first, then as empty directory
+    std.fs.cwd().deleteFile(path) catch {
+        std.fs.cwd().deleteDir(path) catch {};
+    };
+}
+
+fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
+    if (options.delete_matched) {
+        deletePath(path);
+    } else if (options.exec_command) |cmd| {
+        // Build command args, replacing {} with path
+        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        defer child_args.deinit(allocator);
+        for (cmd) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                child_args.append(allocator, path) catch {};
+            } else {
+                child_args.append(allocator, arg) catch {};
+            }
+        }
+        if (child_args.items.len > 0) {
+            var child = std.process.Child.init(child_args.items, allocator);
+            _ = child.spawnAndWait() catch {};
+        }
+    } else {
+        printPath(path, options.print0);
     }
 }
 
