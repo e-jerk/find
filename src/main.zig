@@ -202,6 +202,10 @@ const FindOptions = struct {
     delete_matched: bool = false, // -delete
     exec_command: ?[]const []const u8 = null, // -exec command args ;
     exec_plus: bool = false, // -exec command {} +
+    newer_than: ?[]const u8 = null, // -newer FILE
+    user_name: ?[]const u8 = null, // -user NAME
+    group_name: ?[]const u8 = null, // -group NAME
+    perm_mode: ?[]const u8 = null, // -perm MODE
 };
 
 const OrPattern = struct {
@@ -341,6 +345,18 @@ pub fn main() !u8 {
             options.prune_pattern = args[i];
         } else if (std.mem.eql(u8, arg, "-delete")) {
             options.delete_matched = true;
+        } else if (std.mem.eql(u8, arg, "-newer") and i + 1 < args.len) {
+            i += 1;
+            options.newer_than = args[i];
+        } else if (std.mem.eql(u8, arg, "-user") and i + 1 < args.len) {
+            i += 1;
+            options.user_name = args[i];
+        } else if (std.mem.eql(u8, arg, "-group") and i + 1 < args.len) {
+            i += 1;
+            options.group_name = args[i];
+        } else if (std.mem.eql(u8, arg, "-perm") and i + 1 < args.len) {
+            i += 1;
+            options.perm_mode = args[i];
         } else if (std.mem.eql(u8, arg, "-exec")) {
             // Collect command and args until ; or +
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
@@ -921,7 +937,64 @@ fn walkDirectory(
                     break :blk tf.matches(file_time, now);
                 } else true;
 
-                if (passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter) {
+                // Check -newer filter
+                const passes_newer_filter = if (options.newer_than) |ref_path| blk: {
+                    const ref_stat = std.fs.cwd().statFile(ref_path) catch {
+                        break :blk false;
+                    };
+                    break :blk stat.mtime > ref_stat.mtime;
+                } else true;
+
+                // Get POSIX stat for uid/gid/mode (not available in std.fs.File.Stat on macOS)
+                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null;
+                const posix_stat = if (need_posix_stat) blk: {
+                    const c_path = allocator.dupeZ(u8, path) catch break :blk null;
+                    defer allocator.free(c_path);
+                    var st: std.posix.Stat = undefined;
+                    if (std.c.stat(c_path, &st) != 0) break :blk null;
+                    break :blk st;
+                } else null;
+
+                // Check -user filter
+                const passes_user_filter = if (options.user_name) |uname| blk: {
+                    if (posix_stat == null) break :blk false;
+                    const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
+                        const c_uname = allocator.dupeZ(u8, uname) catch {
+                            break :blk false;
+                        };
+                        defer allocator.free(c_uname);
+                        const pw = std.c.getpwnam(c_uname);
+                        if (pw == null) break :blk false;
+                        break :blk posix_stat.?.uid == pw.?.uid;
+                    };
+                    break :blk posix_stat.?.uid == target_uid;
+                } else true;
+
+                // Check -group filter
+                const passes_group_filter = if (options.group_name) |gname| blk: {
+                    if (posix_stat == null) break :blk false;
+                    const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
+                        const c_gname = allocator.dupeZ(u8, gname) catch {
+                            break :blk false;
+                        };
+                        defer allocator.free(c_gname);
+                        const gr = std.c.getgrnam(c_gname);
+                        if (gr == null) break :blk false;
+                        break :blk posix_stat.?.gid == gr.?.gid;
+                    };
+                    break :blk posix_stat.?.gid == target_gid;
+                } else true;
+
+                // Check -perm filter
+                const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
+                    if (posix_stat == null) break :blk false;
+                    const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
+                        break :blk false;
+                    };
+                    break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
+                } else true;
+
+                if (passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter) {
                     try collected.append(allocator, try allocator.dupe(u8, path));
                 }
             }
