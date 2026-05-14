@@ -218,6 +218,9 @@ const FindOptions = struct {
     quit_after_first: bool = false, // -quit
     printf_format: ?[]const u8 = null, // -printf FORMAT
     start_device: ?u64 = null, // Device ID of start path for -mount
+    readable: bool = false, // -readable
+    writable: bool = false, // -writable
+    executable: bool = false, // -executable
 };
 
 const OrPattern = struct {
@@ -441,6 +444,12 @@ pub fn main() !u8 {
             }
         } else if (std.mem.eql(u8, arg, "-ls")) {
             options.list_detailed = true;
+        } else if (std.mem.eql(u8, arg, "-readable")) {
+            options.readable = true;
+        } else if (std.mem.eql(u8, arg, "-writable")) {
+            options.writable = true;
+        } else if (std.mem.eql(u8, arg, "-executable")) {
+            options.executable = true;
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             backend_mode = .cpu_mode;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -965,7 +974,6 @@ const QuitError = error{QuitRequested};
 
 /// Check if a file/directory passes all metadata filters
 fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
-    _ = path; // Path available for future filters that need the string
     const passes_type_filter = switch (options.file_type) {
         .any => true,
         .file => stat.kind == .file,
@@ -1038,6 +1046,22 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
         break :blk posix_stat.?.gid == target_gid;
     } else true;
 
+    // Check -readable, -writable, -executable
+    var passes_access_filter = true;
+    if (options.readable or options.writable or options.executable) {
+        const c_path = std.heap.page_allocator.dupeZ(u8, path) catch null;
+        if (c_path) |cp| {
+            defer std.heap.page_allocator.free(cp);
+            var access_mode: c_uint = 0;
+            if (options.readable) access_mode |= @intCast(std.posix.R_OK);
+            if (options.writable) access_mode |= @intCast(std.posix.W_OK);
+            if (options.executable) access_mode |= @intCast(std.posix.X_OK);
+            passes_access_filter = std.c.access(cp, access_mode) == 0;
+        } else {
+            passes_access_filter = false;
+        }
+    }
+
     // Check -perm filter
     const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
         if (posix_stat == null) break :blk false;
@@ -1057,7 +1081,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     if (options.always_false) return false;
     // -true doesn't override other filters, it just adds no constraint
 
-    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter;
+    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter and passes_access_filter;
 }
 
 fn walkDirectory(
