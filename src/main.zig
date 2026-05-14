@@ -126,39 +126,48 @@ const TimeType = enum {
     changed, // -ctime (st_ctime)
 };
 
-/// Time filter for -mtime/-atime/-ctime options
+/// Time filter for -mtime/-atime/-ctime/-mmin/-amin/-cmin options
 const TimeFilter = struct {
-    days: i64, // Number of days
+    days: i64, // Number of days (or minutes when is_minutes=true)
     comparison: TimeComparison,
     time_type: TimeType,
+    is_minutes: bool = false, // true for -mmin/-amin/-cmin
 
     /// Check if a file time matches this filter
     /// file_time is the Unix timestamp (seconds since epoch)
     /// now is the current Unix timestamp
     pub fn matches(self: TimeFilter, file_time: i64, now: i64) bool {
-        const seconds_per_day: i64 = 86400;
         const age_seconds = now - file_time;
-        const age_days = @divFloor(age_seconds, seconds_per_day);
-
-        return switch (self.comparison) {
-            .exact => age_days == self.days,
-            .newer => age_days < self.days,
-            .older => age_days > self.days,
-        };
+        if (self.is_minutes) {
+            const age_minutes = @divFloor(age_seconds, 60);
+            return switch (self.comparison) {
+                .exact => age_minutes == self.days,
+                .newer => age_minutes < self.days,
+                .older => age_minutes > self.days,
+            };
+        } else {
+            const seconds_per_day: i64 = 86400;
+            const age_days = @divFloor(age_seconds, seconds_per_day);
+            return switch (self.comparison) {
+                .exact => age_days == self.days,
+                .newer => age_days < self.days,
+                .older => age_days > self.days,
+            };
+        }
     }
 };
 
 /// Parse a time argument like "+7", "-1", "0"
-/// Returns the number of days and comparison type
-fn parseTimeArg(arg: []const u8, time_type: TimeType) ?TimeFilter {
+/// Returns the number of days/minutes and comparison type
+fn parseTimeArg(arg: []const u8, time_type: TimeType, is_minutes: bool) ?TimeFilter {
     if (arg.len == 0) return null;
 
     var comparison: TimeComparison = .exact;
     var start: usize = 0;
 
     // Check for +/- prefix
-    // +N means MORE than N days ago (older)
-    // -N means LESS than N days ago (newer/more recent)
+    // +N means MORE than N days/minutes ago (older)
+    // -N means LESS than N days/minutes ago (newer/more recent)
     if (arg[0] == '+') {
         comparison = .older;
         start = 1;
@@ -169,13 +178,14 @@ fn parseTimeArg(arg: []const u8, time_type: TimeType) ?TimeFilter {
 
     if (start >= arg.len) return null;
 
-    // Parse the number of days
+    // Parse the number of days/minutes
     const days = std.fmt.parseInt(i64, arg[start..], 10) catch return null;
 
     return TimeFilter{
         .days = days,
         .comparison = comparison,
         .time_type = time_type,
+        .is_minutes = is_minutes,
     };
 }
 
@@ -204,6 +214,7 @@ const FindOptions = struct {
     exec_plus: bool = false, // -exec command {} +
     ok_command: ?[]const []const u8 = null, // -ok command args ;
     execdir_command: ?[]const []const u8 = null, // -execdir command args ;
+    okdir_command: ?[]const []const u8 = null, // -okdir command args ;
     list_detailed: bool = false, // -ls
     newer_than: ?[]const u8 = null, // -newer FILE
     user_name: ?[]const u8 = null, // -user NAME
@@ -339,20 +350,38 @@ pub fn main() !u8 {
             };
         } else if (std.mem.eql(u8, arg, "-mtime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .modified) orelse {
+            options.time_filter = parseTimeArg(args[i], .modified, false) orelse {
                 std.debug.print("Invalid -mtime argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-atime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .accessed) orelse {
+            options.time_filter = parseTimeArg(args[i], .accessed, false) orelse {
                 std.debug.print("Invalid -atime argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-ctime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .changed) orelse {
+            options.time_filter = parseTimeArg(args[i], .changed, false) orelse {
                 std.debug.print("Invalid -ctime argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-mmin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .modified, true) orelse {
+                std.debug.print("Invalid -mmin argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-amin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .accessed, true) orelse {
+                std.debug.print("Invalid -amin argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-cmin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .changed, true) orelse {
+                std.debug.print("Invalid -cmin argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-prune") and i + 1 < args.len) {
@@ -441,6 +470,21 @@ pub fn main() !u8 {
             }
             if (exec_args.items.len > 0) {
                 options.execdir_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-okdir")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.okdir_command = try exec_args.toOwnedSlice(allocator);
             }
         } else if (std.mem.eql(u8, arg, "-ls")) {
             options.list_detailed = true;
@@ -1065,10 +1109,26 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -perm filter
     const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
         if (posix_stat == null) break :blk false;
-        const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
-            break :blk false;
-        };
-        break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
+        // Handle /MODE (any bit set), -MODE (all bits set), or MODE (exact match)
+        if (pmode.len > 0 and (pmode[0] == '/' or pmode[0] == '+')) {
+            // Any of the permission bits are set
+            const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & target_mode) != 0;
+        } else if (pmode.len > 0 and pmode[0] == '-') {
+            // All of the permission bits are set
+            const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & target_mode) == target_mode;
+        } else {
+            // Exact match
+            const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
+        }
     } else true;
 
     // Check -links filter
@@ -1497,6 +1557,57 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             if (original_cwd) |ocwd| {
                 _ = std.posix.chdir(ocwd) catch {};
             }
+        }
+    } else if (options.okdir_command) |cmd| {
+        // Like -ok but runs in file's parent directory with basename
+        const basename = std.fs.path.basename(path);
+        const dirname = std.fs.path.dirname(path) orelse ".";
+        // Build command line for display
+        var display_buf: [4096]u8 = undefined;
+        var db_pos: usize = 0;
+        for (cmd, 0..) |arg, idx| {
+            if (idx > 0) {
+                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+            }
+            const a = if (std.mem.eql(u8, arg, "{}")) basename else arg;
+            if (db_pos + a.len < display_buf.len) {
+                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                db_pos += a.len;
+            }
+        }
+        const display = display_buf[0..db_pos];
+        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+
+        // Read one character from stdin
+        var buf: [1]u8 = undefined;
+        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
+            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            defer child_args.deinit(allocator);
+            for (cmd) |arg| {
+                if (std.mem.eql(u8, arg, "{}")) {
+                    child_args.append(allocator, basename) catch {};
+                } else {
+                    child_args.append(allocator, arg) catch {};
+                }
+            }
+            if (child_args.items.len > 0) {
+                const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+                defer if (original_cwd) |ocwd| allocator.free(ocwd);
+                _ = std.posix.chdir(dirname) catch {};
+                var child = std.process.Child.init(child_args.items, allocator);
+                _ = child.spawnAndWait() catch {};
+                if (original_cwd) |ocwd| {
+                    _ = std.posix.chdir(ocwd) catch {};
+                }
+            }
+        }
+        // Consume rest of line
+        while (true) {
+            var discard: [1]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            if (n == 0 or discard[0] == '\n') break;
         }
     } else if (options.list_detailed) {
         printDetailedListing(path, allocator);
