@@ -126,39 +126,65 @@ const TimeType = enum {
     changed, // -ctime (st_ctime)
 };
 
-/// Time filter for -mtime/-atime/-ctime options
+/// Convert a character to TimeType for -newerXY parsing
+fn charToTimeType(c: u8) TimeType {
+    return switch (c) {
+        'a' => .accessed,
+        'c' => .changed,
+        'm' => .modified,
+        else => .modified, // default to m
+    };
+}
+
+/// -newerXY filter: compare time X of file to time Y of reference
+const NewerXYFilter = struct {
+    file_time_type: TimeType, // X: which time of the evaluated file
+    ref_time_type: TimeType, // Y: which time of the reference file
+    ref_path: []const u8,
+};
+
+/// Time filter for -mtime/-atime/-ctime/-mmin/-amin/-cmin options
 const TimeFilter = struct {
-    days: i64, // Number of days
+    days: i64, // Number of days (or minutes when is_minutes=true)
     comparison: TimeComparison,
     time_type: TimeType,
+    is_minutes: bool = false, // true for -mmin/-amin/-cmin
 
     /// Check if a file time matches this filter
     /// file_time is the Unix timestamp (seconds since epoch)
     /// now is the current Unix timestamp
     pub fn matches(self: TimeFilter, file_time: i64, now: i64) bool {
-        const seconds_per_day: i64 = 86400;
         const age_seconds = now - file_time;
-        const age_days = @divFloor(age_seconds, seconds_per_day);
-
-        return switch (self.comparison) {
-            .exact => age_days == self.days,
-            .newer => age_days < self.days,
-            .older => age_days > self.days,
-        };
+        if (self.is_minutes) {
+            const age_minutes = @divFloor(age_seconds, 60);
+            return switch (self.comparison) {
+                .exact => age_minutes == self.days,
+                .newer => age_minutes < self.days,
+                .older => age_minutes > self.days,
+            };
+        } else {
+            const seconds_per_day: i64 = 86400;
+            const age_days = @divFloor(age_seconds, seconds_per_day);
+            return switch (self.comparison) {
+                .exact => age_days == self.days,
+                .newer => age_days < self.days,
+                .older => age_days > self.days,
+            };
+        }
     }
 };
 
 /// Parse a time argument like "+7", "-1", "0"
-/// Returns the number of days and comparison type
-fn parseTimeArg(arg: []const u8, time_type: TimeType) ?TimeFilter {
+/// Returns the number of days/minutes and comparison type
+fn parseTimeArg(arg: []const u8, time_type: TimeType, is_minutes: bool) ?TimeFilter {
     if (arg.len == 0) return null;
 
     var comparison: TimeComparison = .exact;
     var start: usize = 0;
 
     // Check for +/- prefix
-    // +N means MORE than N days ago (older)
-    // -N means LESS than N days ago (newer/more recent)
+    // +N means MORE than N days/minutes ago (older)
+    // -N means LESS than N days/minutes ago (newer/more recent)
     if (arg[0] == '+') {
         comparison = .older;
         start = 1;
@@ -169,13 +195,14 @@ fn parseTimeArg(arg: []const u8, time_type: TimeType) ?TimeFilter {
 
     if (start >= arg.len) return null;
 
-    // Parse the number of days
+    // Parse the number of days/minutes
     const days = std.fmt.parseInt(i64, arg[start..], 10) catch return null;
 
     return TimeFilter{
         .days = days,
         .comparison = comparison,
         .time_type = time_type,
+        .is_minutes = is_minutes,
     };
 }
 
@@ -199,6 +226,37 @@ const FindOptions = struct {
     size_filter: ?SizeFilter = null, // -size filter
     time_filter: ?TimeFilter = null, // -mtime/-atime/-ctime filter
     prune_pattern: ?[]const u8 = null, // -prune pattern (skip directories matching this)
+    delete_matched: bool = false, // -delete
+    exec_command: ?[]const []const u8 = null, // -exec command args ;
+    exec_plus: bool = false, // -exec command {} +
+    ok_command: ?[]const []const u8 = null, // -ok command args ;
+    execdir_command: ?[]const []const u8 = null, // -execdir command args ;
+    okdir_command: ?[]const []const u8 = null, // -okdir command args ;
+    list_detailed: bool = false, // -ls
+    newer_than: ?[]const u8 = null, // -newer FILE (legacy, same as -newermm)
+    newer_xy: ?NewerXYFilter = null, // -newerXY reference
+    user_name: ?[]const u8 = null, // -user NAME
+    group_name: ?[]const u8 = null, // -group NAME
+    perm_mode: ?[]const u8 = null, // -perm MODE
+    follow_symlinks: bool = false, // -follow / -L
+    depth_first: bool = false, // -depth
+    stay_on_filesystem: bool = false, // -mount / -xdev
+    links_count: ?u32 = null, // -links N
+    always_true: bool = false, // -true
+    always_false: bool = false, // -false
+    quit_after_first: bool = false, // -quit
+    printf_format: ?[]const u8 = null, // -printf FORMAT
+    fprint_file: ?[]const u8 = null, // -fprint FILE
+    fprintf_file: ?[]const u8 = null, // -fprintf FILE FORMAT
+    fprintf_format: ?[]const u8 = null, // -fprintf FILE FORMAT
+    start_device: ?u64 = null, // Device ID of start path for -mount
+    inode_number: ?u64 = null, // -inum N
+    samefile_path: ?[]const u8 = null, // -samefile FILE
+    no_user: bool = false, // -nouser
+    no_group: bool = false, // -nogroup
+    readable: bool = false, // -readable
+    writable: bool = false, // -writable
+    executable: bool = false, // -executable
 };
 
 const OrPattern = struct {
@@ -317,25 +375,184 @@ pub fn main() !u8 {
             };
         } else if (std.mem.eql(u8, arg, "-mtime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .modified) orelse {
+            options.time_filter = parseTimeArg(args[i], .modified, false) orelse {
                 std.debug.print("Invalid -mtime argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-atime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .accessed) orelse {
+            options.time_filter = parseTimeArg(args[i], .accessed, false) orelse {
                 std.debug.print("Invalid -atime argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-ctime") and i + 1 < args.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .changed) orelse {
+            options.time_filter = parseTimeArg(args[i], .changed, false) orelse {
                 std.debug.print("Invalid -ctime argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-mmin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .modified, true) orelse {
+                std.debug.print("Invalid -mmin argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-amin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .accessed, true) orelse {
+                std.debug.print("Invalid -amin argument: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-cmin") and i + 1 < args.len) {
+            i += 1;
+            options.time_filter = parseTimeArg(args[i], .changed, true) orelse {
+                std.debug.print("Invalid -cmin argument: {s}\n", .{args[i]});
                 return 1;
             };
         } else if (std.mem.eql(u8, arg, "-prune") and i + 1 < args.len) {
             i += 1;
             options.prune_pattern = args[i];
+        } else if (std.mem.eql(u8, arg, "-delete")) {
+            options.delete_matched = true;
+        } else if (std.mem.startsWith(u8, arg, "-newer") and i + 1 < args.len) {
+            i += 1;
+            const ref_path = args[i];
+            if (arg.len == 6) {
+                // -newer alone = -newermm
+                options.newer_xy = NewerXYFilter{ .file_time_type = .modified, .ref_time_type = .modified, .ref_path = ref_path };
+            } else if (arg.len >= 8) {
+                // -newerXY where X and Y are each a/c/m
+                const x = arg[6];
+                const y = arg[7];
+                options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = charToTimeType(y), .ref_path = ref_path };
+            } else {
+                // -newerX (single suffix) = -newerXm
+                const x = arg[6];
+                options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = .modified, .ref_path = ref_path };
+            }
+        } else if (std.mem.eql(u8, arg, "-user") and i + 1 < args.len) {
+            i += 1;
+            options.user_name = args[i];
+        } else if (std.mem.eql(u8, arg, "-group") and i + 1 < args.len) {
+            i += 1;
+            options.group_name = args[i];
+        } else if (std.mem.eql(u8, arg, "-perm") and i + 1 < args.len) {
+            i += 1;
+            options.perm_mode = args[i];
+        } else if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "-L")) {
+            options.follow_symlinks = true;
+        } else if (std.mem.eql(u8, arg, "-depth")) {
+            options.depth_first = true;
+        } else if (std.mem.eql(u8, arg, "-mount") or std.mem.eql(u8, arg, "-xdev")) {
+            options.stay_on_filesystem = true;
+        } else if (std.mem.eql(u8, arg, "-links") and i + 1 < args.len) {
+            i += 1;
+            options.links_count = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("Invalid -links value: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-true")) {
+            options.always_true = true;
+        } else if (std.mem.eql(u8, arg, "-false")) {
+            options.always_false = true;
+        } else if (std.mem.eql(u8, arg, "-quit")) {
+            options.quit_after_first = true;
+        } else if (std.mem.eql(u8, arg, "-printf") and i + 1 < args.len) {
+            i += 1;
+            options.printf_format = args[i];
+        } else if (std.mem.eql(u8, arg, "-fprint") and i + 1 < args.len) {
+            i += 1;
+            options.fprint_file = args[i];
+        } else if (std.mem.eql(u8, arg, "-fprintf") and i + 2 < args.len) {
+            i += 1;
+            options.fprintf_file = args[i];
+            i += 1;
+            options.fprintf_format = args[i];
+        } else if (std.mem.eql(u8, arg, "-inum") and i + 1 < args.len) {
+            i += 1;
+            options.inode_number = std.fmt.parseInt(u64, args[i], 10) catch {
+                std.debug.print("Invalid -inum value: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-samefile") and i + 1 < args.len) {
+            i += 1;
+            options.samefile_path = args[i];
+        } else if (std.mem.eql(u8, arg, "-nouser")) {
+            options.no_user = true;
+        } else if (std.mem.eql(u8, arg, "-nogroup")) {
+            options.no_group = true;
+        } else if (std.mem.eql(u8, arg, "-exec")) {
+            // Collect command and args until ; or +
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    options.exec_plus = false;
+                    break;
+                } else if (std.mem.eql(u8, exec_arg, "+")) {
+                    options.exec_plus = true;
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.exec_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-ok")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.ok_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-execdir")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.execdir_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-okdir")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.okdir_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-ls")) {
+            options.list_detailed = true;
+        } else if (std.mem.eql(u8, arg, "-readable")) {
+            options.readable = true;
+        } else if (std.mem.eql(u8, arg, "-writable")) {
+            options.writable = true;
+        } else if (std.mem.eql(u8, arg, "-executable")) {
+            options.executable = true;
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             backend_mode = .cpu_mode;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -485,6 +702,8 @@ fn parseFileType(s: []const u8) ?FileType {
     };
 }
 
+var g_quit_requested = false;
+
 fn findFiles(
     allocator: std.mem.Allocator,
     start_path: []const u8,
@@ -506,10 +725,29 @@ fn findFiles(
         return .{ .count = 0, .had_error = true };
     };
 
+    // Get start device for -mount/-xdev
+    var options_with_device = options;
+    if (options.stay_on_filesystem) {
+        const c_path = allocator.dupeZ(u8, start_path) catch null;
+        if (c_path) |cp| {
+            defer allocator.free(cp);
+            var st: std.posix.Stat = undefined;
+            if (std.c.stat(cp, &st) == 0) {
+                options_with_device.start_device = @intCast(st.dev);
+            }
+        }
+    }
+
+    g_quit_requested = false;
+
     // Collect all file paths first
-    walkDirectory(allocator, start_path, options, &collected_paths, 0) catch |err| {
-        std.debug.print("find: error walking '{s}': {}\n", .{ start_path, err });
-        return .{ .count = 0, .had_error = true };
+    walkDirectory(allocator, start_path, options_with_device, &collected_paths, 0) catch |err| {
+        if (err == error.QuitRequested) {
+            // Normal exit after -quit
+        } else {
+            std.debug.print("find: error walking '{s}': {}\n", .{ start_path, err });
+            return .{ .count = 0, .had_error = true };
+        }
     };
 
     if (verbose) {
@@ -532,12 +770,12 @@ fn findFiles(
             }
             // Apply negation if -not was specified
             const should_output = if (options.negate_pattern) !matches else matches;
-            if (should_output) {
-                if (!options.count_only) {
-                    printPath(path, options.print0);
+                if (should_output) {
+                    if (!options.count_only) {
+                        performAction(path, options, allocator);
+                    }
+                    match_count += 1;
                 }
-                match_count += 1;
-            }
         }
         return .{ .count = match_count, .had_error = false };
     }
@@ -545,7 +783,7 @@ fn findFiles(
     // If no pattern specified, just print all collected paths
     if (options.pattern == null and options.ipattern == null and options.path_pattern == null and options.ipath_pattern == null and options.regex_pattern == null and options.iregex_pattern == null) {
         for (collected_paths.items) |path| {
-            printPath(path, options.print0);
+            performAction(path, options, allocator);
         }
         return .{ .count = collected_paths.items.len, .had_error = false };
     }
@@ -598,7 +836,7 @@ fn findFiles(
                 for (collected_paths.items, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -606,7 +844,7 @@ fn findFiles(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(collected_paths.items[match.name_idx], options.print0);
+                        performAction(collected_paths.items[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -647,7 +885,7 @@ fn findFiles(
         for (collected_paths.items, 0..) |path, idx| {
             if (!matched_set.contains(@intCast(idx))) {
                 if (!options.count_only) {
-                    printPath(path, options.print0);
+                    performAction(path, options, allocator);
                 }
                 match_count += 1;
             }
@@ -655,7 +893,7 @@ fn findFiles(
     } else {
         for (result.matches) |match| {
             if (!options.count_only) {
-                printPath(collected_paths.items[match.name_idx], options.print0);
+                performAction(collected_paths.items[match.name_idx], options, allocator);
             }
             match_count += 1;
         }
@@ -714,7 +952,7 @@ fn findFilesWithRegex(
                 for (paths, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -722,7 +960,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(paths[match.name_idx], options.print0);
+                        performAction(paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -768,7 +1006,7 @@ fn findFilesWithRegex(
                 for (paths, 0..) |path, idx| {
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            printPath(path, options.print0);
+                            performAction(path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -776,7 +1014,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        printPath(paths[match.name_idx], options.print0);
+                        performAction(paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -826,13 +1064,183 @@ fn findFilesWithRegexCpu(
         const should_output = if (options.negate_pattern) !matched else matched;
         if (should_output) {
             if (!options.count_only) {
-                printPath(path, options.print0);
+                performAction(path, options, allocator);
             }
             match_count += 1;
         }
     }
 
     return .{ .count = match_count, .had_error = false };
+}
+
+const QuitError = error{QuitRequested};
+
+/// Check if a file/directory passes all metadata filters
+fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
+    const passes_type_filter = switch (options.file_type) {
+        .any => true,
+        .file => stat.kind == .file,
+        .directory => stat.kind == .directory,
+        .symlink => stat.kind == .sym_link,
+        .block_device => stat.kind == .block_device,
+        .char_device => stat.kind == .character_device,
+        .fifo => stat.kind == .named_pipe,
+        .socket => stat.kind == .unix_domain_socket,
+    };
+
+    // Check -empty: file is empty if size == 0, dir is empty if no entries
+    var passes_empty_filter = true;
+    if (options.empty_only) {
+        passes_empty_filter = (stat.kind == .file and stat.size == 0) or (stat.kind == .directory);
+    }
+    if (options.negate_pattern and options.empty_only) {
+        passes_empty_filter = !passes_empty_filter;
+    }
+
+    // Check -size filter
+    const passes_size_filter = if (options.size_filter) |sf|
+        sf.matches(@intCast(stat.size))
+    else
+        true;
+
+    // Check -mtime/-atime/-ctime filter
+    const passes_time_filter = if (options.time_filter) |tf| blk: {
+        const now = std.time.timestamp();
+        const ns_per_sec: i128 = 1_000_000_000;
+        const file_time: i64 = @intCast(switch (tf.time_type) {
+            .modified => @divFloor(stat.mtime, ns_per_sec),
+            .accessed => @divFloor(stat.atime, ns_per_sec),
+            .changed => @divFloor(stat.ctime, ns_per_sec),
+        });
+        break :blk tf.matches(file_time, now);
+    } else true;
+
+    // Check -newer / -newerXY filter
+    const passes_newer_filter = if (options.newer_xy) |nf| blk: {
+        const ref_stat = std.fs.cwd().statFile(nf.ref_path) catch {
+            break :blk false;
+        };
+        const file_time = switch (nf.file_time_type) {
+            .modified => stat.mtime,
+            .accessed => stat.atime,
+            .changed => stat.ctime,
+        };
+        const ref_time = switch (nf.ref_time_type) {
+            .modified => ref_stat.mtime,
+            .accessed => ref_stat.atime,
+            .changed => ref_stat.ctime,
+        };
+        break :blk file_time > ref_time;
+    } else true;
+
+    // Check -user filter
+    const passes_user_filter = if (options.user_name) |uname| blk: {
+        if (posix_stat == null) break :blk false;
+        const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
+            const c_uname = std.heap.page_allocator.dupeZ(u8, uname) catch { break :blk false; };
+            defer std.heap.page_allocator.free(c_uname);
+            const pw = std.c.getpwnam(c_uname);
+            if (pw == null) break :blk false;
+            break :blk posix_stat.?.uid == pw.?.uid;
+        };
+        break :blk posix_stat.?.uid == target_uid;
+    } else true;
+
+    // Check -group filter
+    const passes_group_filter = if (options.group_name) |gname| blk: {
+        if (posix_stat == null) break :blk false;
+        const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
+            const c_gname = std.heap.page_allocator.dupeZ(u8, gname) catch { break :blk false; };
+            defer std.heap.page_allocator.free(c_gname);
+            const gr = std.c.getgrnam(c_gname);
+            if (gr == null) break :blk false;
+            break :blk posix_stat.?.gid == gr.?.gid;
+        };
+        break :blk posix_stat.?.gid == target_gid;
+    } else true;
+
+    // Check -readable, -writable, -executable
+    var passes_access_filter = true;
+    if (options.readable or options.writable or options.executable) {
+        const c_path = std.heap.page_allocator.dupeZ(u8, path) catch null;
+        if (c_path) |cp| {
+            defer std.heap.page_allocator.free(cp);
+            var access_mode: c_uint = 0;
+            if (options.readable) access_mode |= @intCast(std.posix.R_OK);
+            if (options.writable) access_mode |= @intCast(std.posix.W_OK);
+            if (options.executable) access_mode |= @intCast(std.posix.X_OK);
+            passes_access_filter = std.c.access(cp, access_mode) == 0;
+        } else {
+            passes_access_filter = false;
+        }
+    }
+
+    // Check -perm filter
+    const passes_perm_filter = if (options.perm_mode) |pmode| blk: {
+        if (posix_stat == null) break :blk false;
+        // Handle /MODE (any bit set), -MODE (all bits set), or MODE (exact match)
+        if (pmode.len > 0 and (pmode[0] == '/' or pmode[0] == '+')) {
+            // Any of the permission bits are set
+            const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & target_mode) != 0;
+        } else if (pmode.len > 0 and pmode[0] == '-') {
+            // All of the permission bits are set
+            const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & target_mode) == target_mode;
+        } else {
+            // Exact match
+            const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
+                break :blk false;
+            };
+            break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
+        }
+    } else true;
+
+    // Check -links filter
+    const passes_links_filter = if (options.links_count) |n| blk: {
+        if (posix_stat == null) break :blk false;
+        break :blk posix_stat.?.nlink == n;
+    } else true;
+
+    // Check -inum filter
+    const passes_inode_filter = if (options.inode_number) |inum| blk: {
+        if (posix_stat == null) break :blk false;
+        break :blk @as(u64, @intCast(posix_stat.?.ino)) == inum;
+    } else true;
+
+    // Check -samefile filter
+    const passes_samefile_filter = if (options.samefile_path) |sf_path| blk: {
+        if (posix_stat == null) break :blk false;
+        const c_sf_path = std.heap.page_allocator.dupeZ(u8, sf_path) catch { break :blk false; };
+        defer std.heap.page_allocator.free(c_sf_path);
+        var st: std.posix.Stat = undefined;
+        if (std.c.stat(c_sf_path, &st) != 0) break :blk false;
+        break :blk posix_stat.?.ino == st.ino and posix_stat.?.dev == st.dev;
+    } else true;
+
+    // Check -nouser filter
+    const passes_nouser_filter = if (options.no_user) blk: {
+        if (posix_stat == null) break :blk false;
+        const pw = std.c.getpwuid(posix_stat.?.uid);
+        break :blk pw == null;
+    } else true;
+
+    // Check -nogroup filter
+    const passes_nogroup_filter = if (options.no_group) blk: {
+        if (posix_stat == null) break :blk false;
+        const gr = std.c.getgrgid(posix_stat.?.gid);
+        break :blk gr == null;
+    } else true;
+
+    // Check -true / -false
+    if (options.always_false) return false;
+    // -true doesn't override other filters, it just adds no constraint
+
+    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter and passes_access_filter and passes_inode_filter and passes_samefile_filter and passes_nouser_filter and passes_nogroup_filter;
 }
 
 fn walkDirectory(
@@ -842,6 +1250,8 @@ fn walkDirectory(
     collected: *std.ArrayListUnmanaged([]const u8),
     depth: usize,
 ) !void {
+    if (g_quit_requested) return error.QuitRequested;
+
     // Check max depth
     if (options.max_depth) |max| {
         if (depth > max) return;
@@ -857,48 +1267,21 @@ fn walkDirectory(
                     return stat_err;
                 };
 
-                const passes_type_filter = switch (options.file_type) {
-                    .any => true,
-                    .file => stat.kind == .file,
-                    .directory => false,
-                    .symlink => stat.kind == .sym_link,
-                    .block_device => stat.kind == .block_device,
-                    .char_device => stat.kind == .character_device,
-                    .fifo => stat.kind == .named_pipe,
-                    .socket => stat.kind == .unix_domain_socket,
-                };
+                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null or options.inode_number != null or options.samefile_path != null or options.no_user or options.no_group;
+                const posix_stat = if (need_posix_stat) blk: {
+                    const c_path = allocator.dupeZ(u8, path) catch break :blk null;
+                    defer allocator.free(c_path);
+                    var st: std.posix.Stat = undefined;
+                    if (std.c.stat(c_path, &st) != 0) break :blk null;
+                    break :blk st;
+                } else null;
 
-                // Check -empty: file is empty if size == 0
-                var passes_empty_filter = if (options.empty_only)
-                    (stat.kind == .file and stat.size == 0)
-                else
-                    true;
-                // Apply negation to empty filter if -not was specified
-                if (options.negate_pattern and options.empty_only) {
-                    passes_empty_filter = !passes_empty_filter;
-                }
-
-                // Check -size filter
-                const passes_size_filter = if (options.size_filter) |sf|
-                    sf.matches(@intCast(stat.size))
-                else
-                    true;
-
-                // Check -mtime/-atime/-ctime filter
-                const passes_time_filter = if (options.time_filter) |tf| blk: {
-                    const now = std.time.timestamp();
-                    // stat times are in nanoseconds on macOS, convert to seconds
-                    const ns_per_sec: i128 = 1_000_000_000;
-                    const file_time: i64 = @intCast(switch (tf.time_type) {
-                        .modified => @divFloor(stat.mtime, ns_per_sec),
-                        .accessed => @divFloor(stat.atime, ns_per_sec),
-                        .changed => @divFloor(stat.ctime, ns_per_sec),
-                    });
-                    break :blk tf.matches(file_time, now);
-                } else true;
-
-                if (passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter) {
+                if (passesFilters(path, stat, posix_stat, options)) {
                     try collected.append(allocator, try allocator.dupe(u8, path));
+                    if (options.quit_after_first) {
+                        g_quit_requested = true;
+                        return error.QuitRequested;
+                    }
                 }
             }
             return;
@@ -909,16 +1292,26 @@ fn walkDirectory(
     defer dir.close();
 
     // Check -prune: if this directory matches the prune pattern, skip it entirely
-    // Don't add it to results and don't recurse into it
     if (options.prune_pattern) |prune_pat| {
         const basename = std.fs.path.basename(path);
         if (matchGlob(basename, prune_pat, false)) {
-            // Directory matches prune pattern - skip it entirely
             return;
         }
     }
 
-    // Recurse into directory contents (need to do this first for -empty check)
+    // Check -mount: don't descend into directories on different filesystems
+    if (options.stay_on_filesystem and options.start_device != null) {
+        const c_path = allocator.dupeZ(u8, path) catch return;
+        defer allocator.free(c_path);
+        var st: std.posix.Stat = undefined;
+        if (std.c.stat(c_path, &st) == 0) {
+            if (@as(u64, @intCast(st.dev)) != options.start_device.?) {
+                return; // Different filesystem, skip
+            }
+        }
+    }
+
+    // Recurse into directory contents
     var iter = dir.iterate();
     var has_entries = false;
     var children: std.ArrayListUnmanaged([]const u8) = .{};
@@ -933,42 +1326,953 @@ fn walkDirectory(
         try children.append(allocator, child_path);
     }
 
-    // It's a directory - add it if it passes filters
-    if (depth >= options.min_depth) {
-        const passes_type_filter = switch (options.file_type) {
-            .any => true,
-            .directory => true,
-            else => false,
-        };
-
-        // Check -empty: directory is empty if it has no entries
-        var passes_empty_filter = if (options.empty_only)
-            !has_entries
-        else
-            true;
-        // Apply negation to empty filter if -not was specified
-        if (options.negate_pattern and options.empty_only) {
-            passes_empty_filter = !passes_empty_filter;
-        }
-
-        if (passes_type_filter and passes_empty_filter) {
-            try collected.append(allocator, try allocator.dupe(u8, path));
+    // With -depth, recurse into children BEFORE adding the directory
+    if (options.depth_first) {
+        for (children.items) |child_path| {
+            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            if (g_quit_requested) return error.QuitRequested;
         }
     }
 
-    // Recurse into children
-    for (children.items) |child_path| {
-        try walkDirectory(allocator, child_path, options, collected, depth + 1);
+    // It's a directory - add it if it passes filters
+    if (depth >= options.min_depth) {
+        // For directories, we need to check filters. statFile works on directories too.
+        const stat = std.fs.cwd().statFile(path) catch |stat_err| {
+            if (stat_err == error.FileNotFound) return;
+            return stat_err;
+        };
+
+        const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
+        const posix_stat = if (need_posix_stat) blk: {
+            const c_path = allocator.dupeZ(u8, path) catch break :blk null;
+            defer allocator.free(c_path);
+            var st: std.posix.Stat = undefined;
+            if (std.c.stat(c_path, &st) != 0) break :blk null;
+            break :blk st;
+        } else null;
+
+        if (passesFilters(path, stat, posix_stat, options)) {
+            try collected.append(allocator, try allocator.dupe(u8, path));
+            if (options.quit_after_first) {
+                g_quit_requested = true;
+                return error.QuitRequested;
+            }
+        }
+    }
+
+    // Without -depth, recurse into children AFTER adding the directory
+    if (!options.depth_first) {
+        for (children.items) |child_path| {
+            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            if (g_quit_requested) return error.QuitRequested;
+        }
     }
 }
 
 fn printPath(path: []const u8, print0: bool) void {
-    const handle: std.posix.fd_t = std.posix.STDOUT_FILENO;
-    _ = std.posix.write(handle, path) catch {};
     if (print0) {
-        _ = std.posix.write(handle, &[_]u8{0}) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, &[_]u8{0}) catch {};
     } else {
-        _ = std.posix.write(handle, "\n") catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+    }
+}
+
+fn printPathToFile(path: []const u8, print0: bool, outfile: []const u8) void {
+    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+        if (err == error.FileNotFound) {
+            // Create the file
+            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
+            defer new_file.close();
+            if (print0) {
+                _ = new_file.write(path) catch {};
+                _ = new_file.write(&[_]u8{0}) catch {};
+            } else {
+                _ = new_file.write(path) catch {};
+                _ = new_file.write("\n") catch {};
+            }
+            return;
+        }
+        return;
+    };
+    defer file.close();
+    // Append to existing file
+    file.seekFromEnd(0) catch {};
+    if (print0) {
+        _ = file.write(path) catch {};
+        _ = file.write(&[_]u8{0}) catch {};
+    } else {
+        _ = file.write(path) catch {};
+        _ = file.write("\n") catch {};
+    }
+}
+
+fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    defer output.deinit(allocator);
+
+    // Cache stat info lazily
+    var stat_cache: ?std.posix.Stat = null;
+    var fs_stat_cache: ?std.fs.File.Stat = null;
+
+    const getPstat = struct {
+        s: *?std.posix.Stat,
+        p: []const u8,
+        a: std.mem.Allocator,
+        fn get(self: @This()) ?*std.posix.Stat {
+            if (self.s.* == null) {
+                const c_path = self.a.dupeZ(u8, self.p) catch return null;
+                defer self.a.free(c_path);
+                var st: std.posix.Stat = undefined;
+                if (std.c.stat(c_path, &st) == 0) {
+                    self.s.* = st;
+                }
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const getFstat = struct {
+        s: *?std.fs.File.Stat,
+        p: []const u8,
+        fn get(self: @This()) ?*std.fs.File.Stat {
+            if (self.s.* == null) {
+                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+
+    var i: usize = 0;
+    while (i < format.len) : (i += 1) {
+        if (format[i] == '%' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'p' => output.appendSlice(allocator, path) catch {},
+                'f' => output.appendSlice(allocator, std.fs.path.basename(path)) catch {},
+                'd' => {
+                    const dirname = std.fs.path.dirname(path);
+                    output.appendSlice(allocator, dirname orelse ".") catch {};
+                },
+                's' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'U' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'G' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'm' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'M' => {
+                    if (pstat.get()) |st| {
+                        const mode: u16 = @intCast(st.mode);
+                        const file_type_char = fileTypeChar(mode);
+                        const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
+                        const rwx = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
+                            if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
+                        };
+                        const rwxg = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
+                            if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
+                        };
+                        const rwxo = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
+                            if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
+                        };
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
+                            file_type_char,
+                            &rwx,
+                            &rwxg,
+                            &rwxo,
+                        }) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'u' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getpwuid(st.uid)) |pw| {
+                            if (pw.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'g' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getgrgid(st.gid)) |gr| {
+                            if (gr.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'y' => {
+                    if (pstat.get()) |st| {
+                        const c = fileTypeCharShort(@intCast(st.mode));
+                        output.append(allocator, c) catch {};
+                    }
+                },
+                'i' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'n' => {
+                    if (pstat.get()) |st| {
+                        var buf: [8]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'T' => {
+                    // Time format: %T@ = seconds since epoch, %T+ = ISO-like, %TY = year, etc.
+                    if (i + 1 < format.len) {
+                        i += 1;
+                        const time_esc = format[i];
+                        if (fstat.get()) |st| {
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            switch (time_esc) {
+                                '@' => {
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                '+' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const epoch_day = epoch.getEpochDay();
+                                    const year_day = epoch_day.calculateYearDay();
+                                    const month_day = year_day.calculateMonthDay();
+                                    const day_secs = epoch.getDaySeconds();
+                                    var buf: [64]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
+                                        year_day.year,
+                                        month_day.month,
+                                        month_day.day_index + 1,
+                                        day_secs.getHoursIntoDay(),
+                                        day_secs.getMinutesIntoHour(),
+                                        day_secs.getSecondsIntoMinute(),
+                                    }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'Y' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const year_day = epoch.getEpochDay().calculateYearDay();
+                                    var buf: [16]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'm' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'd' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'H' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'M' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'S' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                else => {
+                                    output.append(allocator, '%') catch {};
+                                    output.append(allocator, 'T') catch {};
+                                    output.append(allocator, time_esc) catch {};
+                                },
+                            }
+                        }
+                    }
+                },
+                '%' => output.append(allocator, '%') catch {},
+                else => {
+                    output.append(allocator, '%') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else if (format[i] == '\\' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'n' => output.append(allocator, '\n') catch {},
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                '0'...'7' => {
+                    // Octal escape: up to 3 digits
+                    var octal_val: u8 = esc - '0';
+                    var j: usize = 0;
+                    while (j < 2 and i + 1 < format.len and format[i + 1] >= '0' and format[i + 1] <= '7') : (j += 1) {
+                        i += 1;
+                        octal_val = octal_val * 8 + (format[i] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '\\') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                else => {
+                    output.append(allocator, '\\') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else {
+            output.append(allocator, format[i]) catch {};
+        }
+    }
+
+    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+        if (err == error.FileNotFound) {
+            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
+            defer new_file.close();
+            _ = new_file.write(output.items) catch {};
+            return;
+        }
+        return;
+    };
+    defer file.close();
+    _ = file.seekFromEnd(0) catch 0;
+    _ = file.write(output.items) catch {};
+}
+
+fn deletePath(path: []const u8) void {
+    // Try to delete as file first, then as empty directory
+    std.fs.cwd().deleteFile(path) catch {
+        std.fs.cwd().deleteDir(path) catch {};
+    };
+}
+
+fn fileTypeChar(mode: u16) u8 {
+    const m = mode & @as(u16, @intCast(std.posix.S.IFMT));
+    if (m == @as(u16, @intCast(std.posix.S.IFREG))) return '-';
+    if (m == @as(u16, @intCast(std.posix.S.IFDIR))) return 'd';
+    if (m == @as(u16, @intCast(std.posix.S.IFLNK))) return 'l';
+    if (m == @as(u16, @intCast(std.posix.S.IFBLK))) return 'b';
+    if (m == @as(u16, @intCast(std.posix.S.IFCHR))) return 'c';
+    if (m == @as(u16, @intCast(std.posix.S.IFIFO))) return 'p';
+    if (m == @as(u16, @intCast(std.posix.S.IFSOCK))) return 's';
+    return '?';
+}
+
+fn fileTypeCharShort(mode: u16) u8 {
+    const c = fileTypeChar(mode);
+    return if (c == '-') 'f' else c;
+}
+
+/// Print formatted output according to GNU find -printf FORMAT string
+fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    defer output.deinit(allocator);
+
+    // Cache stat info lazily
+    var stat_cache: ?std.posix.Stat = null;
+    var fs_stat_cache: ?std.fs.File.Stat = null;
+
+    const getPstat = struct {
+        s: *?std.posix.Stat,
+        p: []const u8,
+        a: std.mem.Allocator,
+        fn get(self: @This()) ?*std.posix.Stat {
+            if (self.s.* == null) {
+                const c_path = self.a.dupeZ(u8, self.p) catch return null;
+                defer self.a.free(c_path);
+                var st: std.posix.Stat = undefined;
+                if (std.c.stat(c_path, &st) == 0) {
+                    self.s.* = st;
+                }
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const getFstat = struct {
+        s: *?std.fs.File.Stat,
+        p: []const u8,
+        fn get(self: @This()) ?*std.fs.File.Stat {
+            if (self.s.* == null) {
+                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+
+    var i: usize = 0;
+    while (i < format.len) : (i += 1) {
+        if (format[i] == '%' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'p' => output.appendSlice(allocator, path) catch {},
+                'f' => output.appendSlice(allocator, std.fs.path.basename(path)) catch {},
+                'd' => {
+                    const dirname = std.fs.path.dirname(path);
+                    output.appendSlice(allocator, dirname orelse ".") catch {};
+                },
+                's' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'U' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'G' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'm' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'M' => {
+                    if (pstat.get()) |st| {
+                        const mode: u16 = @intCast(st.mode);
+                        const file_type_char = fileTypeChar(mode);
+                        const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
+                        const rwx = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
+                            if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
+                        };
+                        const rwxg = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
+                            if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
+                        };
+                        const rwxo = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
+                            if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
+                        };
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
+                            file_type_char,
+                            &rwx,
+                            &rwxg,
+                            &rwxo,
+                        }) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'u' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getpwuid(st.uid)) |pw| {
+                            if (pw.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'g' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getgrgid(st.gid)) |gr| {
+                            if (gr.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'y' => {
+                    if (pstat.get()) |st| {
+                        output.append(allocator, fileTypeCharShort(@intCast(st.mode))) catch {};
+                    }
+                },
+                'i' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'n' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'T' => {
+                    // Time format: %T@ = seconds since epoch, %T+ = ISO-like, %TY = year, etc.
+                    if (i + 1 < format.len) {
+                        i += 1;
+                        const time_esc = format[i];
+                        if (fstat.get()) |st| {
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            switch (time_esc) {
+                                '@' => {
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                '+' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const epoch_day = epoch.getEpochDay();
+                                    const year_day = epoch_day.calculateYearDay();
+                                    const month_day = year_day.calculateMonthDay();
+                                    const day_secs = epoch.getDaySeconds();
+                                    var buf: [64]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
+                                        year_day.year,
+                                        month_day.month,
+                                        month_day.day_index + 1,
+                                        day_secs.getHoursIntoDay(),
+                                        day_secs.getMinutesIntoHour(),
+                                        day_secs.getSecondsIntoMinute(),
+                                    }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'Y' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const year_day = epoch.getEpochDay().calculateYearDay();
+                                    var buf: [16]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'm' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'd' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'H' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'M' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'S' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                else => {
+                                    output.append(allocator, '%') catch {};
+                                    output.append(allocator, 'T') catch {};
+                                    output.append(allocator, time_esc) catch {};
+                                },
+                            }
+                        }
+                    }
+                },
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                'a' => output.append(allocator, '\x07') catch {},
+                'b' => output.append(allocator, '\x08') catch {},
+                'c' => output.append(allocator, ' ') catch {},
+                '0'...'7' => {
+                    // Octal escape: \0NNN where NNN is 1-3 octal digits
+                    var octal_val: u8 = 0;
+                    var j: usize = 0;
+                    while (j < 3 and i + j < format.len and format[i + j] >= '0' and format[i + j] <= '7') : (j += 1) {
+                        octal_val = octal_val * 8 + (format[i + j] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '%') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                '%' => output.append(allocator, '%') catch {},
+                '\\' => output.append(allocator, '\\') catch {},
+                else => {
+                    output.append(allocator, '%') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else if (format[i] == '\\' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'n' => output.append(allocator, '\n') catch {},
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                'a' => output.append(allocator, '\x07') catch {},
+                'b' => output.append(allocator, '\x08') catch {},
+                'c' => output.append(allocator, ' ') catch {},
+                'f' => output.append(allocator, '\x0c') catch {},
+                '0'...'7' => {
+                    var octal_val: u8 = 0;
+                    var j: usize = 0;
+                    while (j < 3 and i + j < format.len and format[i + j] >= '0' and format[i + j] <= '7') : (j += 1) {
+                        octal_val = octal_val * 8 + (format[i + j] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '\\') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                else => {
+                    output.append(allocator, '\\') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else {
+            output.append(allocator, format[i]) catch {};
+        }
+    }
+
+    _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
+}
+
+/// Format a POSIX mode into ls -l style string (e.g., "-rw-r--r--")
+fn formatMode(mode: u32) [10]u8 {
+    var result: [10]u8 = undefined;
+    // File type
+    result[0] = switch (mode & 0o170000) {
+        0o040000 => 'd',
+        0o100000 => '-',
+        0o120000 => 'l',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o010000 => 'p',
+        0o140000 => 's',
+        else => '?',
+    };
+    // Owner permissions
+    result[1] = if (mode & 0o400 != 0) 'r' else '-';
+    result[2] = if (mode & 0o200 != 0) 'w' else '-';
+    result[3] = if (mode & 0o4000 != 0) 's' else if (mode & 0o100 != 0) 'x' else '-';
+    // Group permissions
+    result[4] = if (mode & 0o040 != 0) 'r' else '-';
+    result[5] = if (mode & 0o020 != 0) 'w' else '-';
+    result[6] = if (mode & 0o2000 != 0) 's' else if (mode & 0o010 != 0) 'x' else '-';
+    // Other permissions
+    result[7] = if (mode & 0o004 != 0) 'r' else '-';
+    result[8] = if (mode & 0o002 != 0) 'w' else '-';
+    result[9] = if (mode & 0o1000 != 0) 't' else if (mode & 0o001 != 0) 'x' else '-';
+    return result;
+}
+
+/// Print detailed listing like `ls -dils` for a file
+fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
+    // Use statFile to get standard fs.Stat, then use POSIX stat for detailed fields
+    const stat = std.fs.cwd().statFile(path) catch return;
+
+    const c_path = allocator.dupeZ(u8, path) catch return;
+    defer allocator.free(c_path);
+    var pst: std.posix.Stat = undefined;
+    if (std.c.stat(c_path, &pst) != 0) return;
+
+    const mode_str = formatMode(@intCast(pst.mode));
+    const nlink = pst.nlink;
+    const uid = pst.uid;
+    const gid = pst.gid;
+    const size = pst.size;
+    const ino = pst.ino;
+    const blocks = pst.blocks;
+
+    // Format time like ls -l: "Mon DD HH:MM" or "Mon DD  YYYY"
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const mtime_sec: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+    const epoch_day = epoch.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_secs = epoch.getDaySeconds();
+
+    var time_buf: [64]u8 = undefined;
+    const time_str = blk: {
+        const now = std.time.timestamp();
+        const age_seconds = now - mtime_sec;
+        const six_months: i64 = 6 * 30 * 24 * 3600;
+        const month_idx = @intFromEnum(month_day.month) - 1;
+        if (@abs(age_seconds) > six_months) {
+            break :blk std.fmt.bufPrint(&time_buf, "{s} {: >2}  {d}", .{
+                months[month_idx],
+                month_day.day_index + 1,
+                year_day.year,
+            }) catch "??? ??  ????";
+        } else {
+            break :blk std.fmt.bufPrint(&time_buf, "{s} {: >2} {:0>2}:{:0>2}", .{
+                months[month_idx],
+                month_day.day_index + 1,
+                day_secs.getHoursIntoDay(),
+                day_secs.getMinutesIntoHour(),
+            }) catch "??? ?? ??:??";
+        }
+    };
+
+    // Look up user and group names (fallback to numeric IDs)
+    var uname_buf: [64]u8 = undefined;
+    var gname_buf: [64]u8 = undefined;
+    const uname = std.fmt.bufPrint(&uname_buf, "{d}", .{uid}) catch "?";
+    const gname = std.fmt.bufPrint(&gname_buf, "{d}", .{gid}) catch "?";
+
+    const basename = std.fs.path.basename(path);
+
+    // Format: ino blocks mode nlink owner group size time basename
+    var output_buf: [4096]u8 = undefined;
+    const output = std.fmt.bufPrint(&output_buf, "{d} {d} {s} {d} {s} {s} {d} {s} {s}\n", .{
+        ino,
+        @divFloor(blocks, 2), // GNU find -ls uses 1K blocks; st.blocks is 512-byte blocks
+        &mode_str,
+        nlink,
+        uname,
+        gname,
+        size,
+        time_str,
+        basename,
+    }) catch return;
+
+    _ = std.posix.write(std.posix.STDOUT_FILENO, output) catch {};
+}
+
+fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
+    if (options.delete_matched) {
+        deletePath(path);
+    } else if (options.exec_command) |cmd| {
+        // Build command args, replacing {} with path
+        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        defer child_args.deinit(allocator);
+        for (cmd) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                child_args.append(allocator, path) catch {};
+            } else {
+                child_args.append(allocator, arg) catch {};
+            }
+        }
+        if (child_args.items.len > 0) {
+            var child = std.process.Child.init(child_args.items, allocator);
+            _ = child.spawnAndWait() catch {};
+        }
+    } else if (options.ok_command) |cmd| {
+        // Build command line for display
+        var display_buf: [4096]u8 = undefined;
+        var db_pos: usize = 0;
+        for (cmd, 0..) |arg, idx| {
+            if (idx > 0) {
+                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+            }
+            const a = if (std.mem.eql(u8, arg, "{}")) path else arg;
+            if (db_pos + a.len < display_buf.len) {
+                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                db_pos += a.len;
+            }
+        }
+        const display = display_buf[0..db_pos];
+        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+
+        // Read one character from stdin
+        var buf: [1]u8 = undefined;
+        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
+            // Build command args, replacing {} with path
+            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            defer child_args.deinit(allocator);
+            for (cmd) |arg| {
+                if (std.mem.eql(u8, arg, "{}")) {
+                    child_args.append(allocator, path) catch {};
+                } else {
+                    child_args.append(allocator, arg) catch {};
+                }
+            }
+            if (child_args.items.len > 0) {
+                var child = std.process.Child.init(child_args.items, allocator);
+                _ = child.spawnAndWait() catch {};
+            }
+        }
+        // Consume rest of line
+        while (true) {
+            var discard: [1]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            if (n == 0 or discard[0] == '\n') break;
+        }
+    } else if (options.execdir_command) |cmd| {
+        // Execute in the file's parent directory, replacing {} with basename
+        const basename = std.fs.path.basename(path);
+        const dirname = std.fs.path.dirname(path) orelse ".";
+        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        defer child_args.deinit(allocator);
+        for (cmd) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                child_args.append(allocator, basename) catch {};
+            } else {
+                child_args.append(allocator, arg) catch {};
+            }
+        }
+        if (child_args.items.len > 0) {
+            // Save original cwd, chdir to parent, spawn child, restore cwd
+            const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+            defer if (original_cwd) |ocwd| allocator.free(ocwd);
+            _ = std.posix.chdir(dirname) catch {};
+            var child = std.process.Child.init(child_args.items, allocator);
+            _ = child.spawnAndWait() catch {};
+            if (original_cwd) |ocwd| {
+                _ = std.posix.chdir(ocwd) catch {};
+            }
+        }
+    } else if (options.okdir_command) |cmd| {
+        // Like -ok but runs in file's parent directory with basename
+        const basename = std.fs.path.basename(path);
+        const dirname = std.fs.path.dirname(path) orelse ".";
+        // Build command line for display
+        var display_buf: [4096]u8 = undefined;
+        var db_pos: usize = 0;
+        for (cmd, 0..) |arg, idx| {
+            if (idx > 0) {
+                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+            }
+            const a = if (std.mem.eql(u8, arg, "{}")) basename else arg;
+            if (db_pos + a.len < display_buf.len) {
+                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                db_pos += a.len;
+            }
+        }
+        const display = display_buf[0..db_pos];
+        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+
+        // Read one character from stdin
+        var buf: [1]u8 = undefined;
+        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
+            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            defer child_args.deinit(allocator);
+            for (cmd) |arg| {
+                if (std.mem.eql(u8, arg, "{}")) {
+                    child_args.append(allocator, basename) catch {};
+                } else {
+                    child_args.append(allocator, arg) catch {};
+                }
+            }
+            if (child_args.items.len > 0) {
+                const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+                defer if (original_cwd) |ocwd| allocator.free(ocwd);
+                _ = std.posix.chdir(dirname) catch {};
+                var child = std.process.Child.init(child_args.items, allocator);
+                _ = child.spawnAndWait() catch {};
+                if (original_cwd) |ocwd| {
+                    _ = std.posix.chdir(ocwd) catch {};
+                }
+            }
+        }
+        // Consume rest of line
+        while (true) {
+            var discard: [1]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            if (n == 0 or discard[0] == '\n') break;
+        }
+    } else if (options.list_detailed) {
+        printDetailedListing(path, allocator);
+    } else if (options.fprintf_file) |outfile| {
+        if (options.fprintf_format) |fmt| {
+            printFormattedToFile(path, fmt, outfile, allocator);
+        }
+    } else if (options.fprint_file) |outfile| {
+        printPathToFile(path, options.print0, outfile);
+    } else if (options.printf_format) |fmt| {
+        printFormatted(path, fmt, allocator);
+    } else {
+        printPath(path, options.print0);
     }
 }
 
@@ -1044,51 +2348,44 @@ fn printUsage() void {
         \\  -mtime [+-]N       File modified N*24 hours ago (+N older, -N newer)
         \\  -atime [+-]N       File accessed N*24 hours ago
         \\  -ctime [+-]N       File status changed N*24 hours ago
-        \\
-        \\Actions:
+        \\  -mmin [+-]N        File modified N minutes ago
+        \\  -amin [+-]N         File accessed N minutes ago
+        \\  -cmin [+-]N         File status changed N minutes ago
+        \\  -newer FILE        File is newer than FILE (modification time)
+        \\  -newerXY FILE      File time X newer than reference time Y
+        \\                      X,Y: a=access, c=change, m=modify
         \\  -prune PATTERN     Do not descend into directories matching PATTERN
-        \\
-        \\Operators:
+        \\  -exec CMD \;       Execute CMD for each matched file (replace {} with path)
+        \\  -ok CMD \;        Like -exec but prompts user before each execution
+        \\  -execdir CMD \;   Like -exec but runs CMD in file's parent directory
+        \\  -ls               Detailed listing of each file (like ls -dils)
+        \\  -delete            Delete matched files/directories
         \\  -not, !            Negate the following test
-        \\
-        \\Options:
         \\  -maxdepth LEVELS  Descend at most LEVELS of directories
         \\  -mindepth LEVELS  Skip tests at levels less than LEVELS
         \\  -print0           Print paths followed by NUL instead of newline
         \\  -count            Print count of matches (extension)
-        \\
-        \\Backend Selection:
         \\  --auto            Auto-select optimal backend (default)
         \\  --gpu             Force GPU (Metal on macOS, Vulkan on Linux)
         \\  --cpu             Force CPU backend (SIMD-optimized)
         \\  --metal           Force Metal backend (macOS only)
         \\  --vulkan          Force Vulkan backend
-        \\
-        \\Miscellaneous:
         \\  -v, --verbose     Print backend and timing information
         \\  -h, --help        Display this help and exit
         \\      --version     Output version information and exit
-        \\
-        \\Pattern Wildcards:                               [GPU+SIMD]
         \\  *      matches any string (including empty)
         \\  ?      matches any single character
         \\  [abc]  matches any character in the set
         \\  [a-z]  matches any character in the range
         \\  [!abc] matches any character NOT in the set
-        \\
-        \\Optimization Notes:
         \\  [GPU+SIMD] Pattern matching uses GPU compute shaders (Metal/Vulkan)
         \\             for parallel glob evaluation. CPU fallback uses 16/32-byte
         \\             SIMD vector operations for accelerated string comparison.
         \\  [CPU]      File type and attribute tests require filesystem syscalls
         \\             and cannot be GPU-accelerated.
-        \\
-        \\Performance (typical GPU speedups over CPU):
         \\  10K files:   ~4x faster
         \\  100K files:  ~7x faster
         \\  1M files:    ~10x faster
-        \\
-        \\Examples:
         \\  find . -name '*.txt'              Find all .txt files
         \\  find . -iname '*.jpg'             Case-insensitive search
         \\  find /var/log -type f -name '*.log'
