@@ -1292,6 +1292,39 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(allocator);
 
+    // Cache stat info lazily
+    var stat_cache: ?std.posix.Stat = null;
+    var fs_stat_cache: ?std.fs.File.Stat = null;
+
+    const getPstat = struct {
+        s: *?std.posix.Stat,
+        p: []const u8,
+        a: std.mem.Allocator,
+        fn get(self: @This()) ?*std.posix.Stat {
+            if (self.s.* == null) {
+                const c_path = self.a.dupeZ(u8, self.p) catch return null;
+                defer self.a.free(c_path);
+                var st: std.posix.Stat = undefined;
+                if (std.c.stat(c_path, &st) == 0) {
+                    self.s.* = st;
+                }
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const getFstat = struct {
+        s: *?std.fs.File.Stat,
+        p: []const u8,
+        fn get(self: @This()) ?*std.fs.File.Stat {
+            if (self.s.* == null) {
+                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+
     var i: usize = 0;
     while (i < format.len) : (i += 1) {
         if (format[i] == '%' and i + 1 < format.len) {
@@ -1304,7 +1337,126 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                     const dirname = std.fs.path.dirname(path);
                     output.appendSlice(allocator, dirname orelse ".") catch {};
                 },
-                'n' => output.append(allocator, '\n') catch {},
+                's' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'U' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'G' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'm' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'i' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'n' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'T' => {
+                    // Time format: %T@ = seconds since epoch, %T+ = ISO-like, %TY = year, etc.
+                    if (i + 1 < format.len) {
+                        i += 1;
+                        const time_esc = format[i];
+                        if (fstat.get()) |st| {
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            switch (time_esc) {
+                                '@' => {
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                '+' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const epoch_day = epoch.getEpochDay();
+                                    const year_day = epoch_day.calculateYearDay();
+                                    const month_day = year_day.calculateMonthDay();
+                                    const day_secs = epoch.getDaySeconds();
+                                    var buf: [64]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
+                                        year_day.year,
+                                        month_day.month,
+                                        month_day.day_index + 1,
+                                        day_secs.getHoursIntoDay(),
+                                        day_secs.getMinutesIntoHour(),
+                                        day_secs.getSecondsIntoMinute(),
+                                    }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'Y' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const year_day = epoch.getEpochDay().calculateYearDay();
+                                    var buf: [16]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'm' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'd' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'H' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'M' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'S' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                else => {
+                                    output.append(allocator, '%') catch {};
+                                    output.append(allocator, 'T') catch {};
+                                    output.append(allocator, time_esc) catch {};
+                                },
+                            }
+                        }
+                    }
+                },
                 't' => output.append(allocator, '\t') catch {},
                 'r' => output.append(allocator, '\r') catch {},
                 'a' => output.append(allocator, '\x07') catch {},
