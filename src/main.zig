@@ -1328,6 +1328,23 @@ fn deletePath(path: []const u8) void {
     };
 }
 
+fn fileTypeChar(mode: u16) u8 {
+    const m = mode & @as(u16, @intCast(std.posix.S.IFMT));
+    if (m == @as(u16, @intCast(std.posix.S.IFREG))) return '-';
+    if (m == @as(u16, @intCast(std.posix.S.IFDIR))) return 'd';
+    if (m == @as(u16, @intCast(std.posix.S.IFLNK))) return 'l';
+    if (m == @as(u16, @intCast(std.posix.S.IFBLK))) return 'b';
+    if (m == @as(u16, @intCast(std.posix.S.IFCHR))) return 'c';
+    if (m == @as(u16, @intCast(std.posix.S.IFIFO))) return 'p';
+    if (m == @as(u16, @intCast(std.posix.S.IFSOCK))) return 's';
+    return '?';
+}
+
+fn fileTypeCharShort(mode: u16) u8 {
+    const c = fileTypeChar(mode);
+    return if (c == '-') 'f' else c;
+}
+
 /// Print formatted output according to GNU find -printf FORMAT string
 fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
     var output: std.ArrayListUnmanaged(u8) = .{};
@@ -1404,6 +1421,54 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                         var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
                         output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'M' => {
+                    if (pstat.get()) |st| {
+                        const mode: u16 = @intCast(st.mode);
+                        const file_type_char = fileTypeChar(mode);
+                        const rwx = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IXUSR)) != 0) 'x' else '-',
+                        };
+                        const rwxg = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IXGRP)) != 0) 'x' else '-',
+                        };
+                        const rwxo = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IXOTH)) != 0) 'x' else '-',
+                        };
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
+                            file_type_char,
+                            &rwx,
+                            &rwxg,
+                            &rwxo,
+                        }) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'u' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'g' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'y' => {
+                    if (pstat.get()) |st| {
+                        output.append(allocator, fileTypeCharShort(@intCast(st.mode))) catch {};
                     }
                 },
                 'i' => {
