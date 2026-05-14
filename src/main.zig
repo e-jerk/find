@@ -202,6 +202,9 @@ const FindOptions = struct {
     delete_matched: bool = false, // -delete
     exec_command: ?[]const []const u8 = null, // -exec command args ;
     exec_plus: bool = false, // -exec command {} +
+    ok_command: ?[]const []const u8 = null, // -ok command args ;
+    execdir_command: ?[]const []const u8 = null, // -execdir command args ;
+    list_detailed: bool = false, // -ls
     newer_than: ?[]const u8 = null, // -newer FILE
     user_name: ?[]const u8 = null, // -user NAME
     group_name: ?[]const u8 = null, // -group NAME
@@ -406,6 +409,38 @@ pub fn main() !u8 {
             if (exec_args.items.len > 0) {
                 options.exec_command = try exec_args.toOwnedSlice(allocator);
             }
+        } else if (std.mem.eql(u8, arg, "-ok")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.ok_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-execdir")) {
+            // Collect command and args until ;
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            i += 1;
+            while (i < args.len) : (i += 1) {
+                const exec_arg = args[i];
+                if (std.mem.eql(u8, exec_arg, ";")) {
+                    break;
+                } else {
+                    try exec_args.append(allocator, exec_arg);
+                }
+            }
+            if (exec_args.items.len > 0) {
+                options.execdir_command = try exec_args.toOwnedSlice(allocator);
+            }
+        } else if (std.mem.eql(u8, arg, "-ls")) {
+            options.list_detailed = true;
         } else if (std.mem.eql(u8, arg, "--cpu")) {
             backend_mode = .cpu_mode;
         } else if (std.mem.eql(u8, arg, "--gnu")) {
@@ -1251,6 +1286,109 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
     _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
 }
 
+/// Format a POSIX mode into ls -l style string (e.g., "-rw-r--r--")
+fn formatMode(mode: u32) [10]u8 {
+    var result: [10]u8 = undefined;
+    // File type
+    result[0] = switch (mode & 0o170000) {
+        0o040000 => 'd',
+        0o100000 => '-',
+        0o120000 => 'l',
+        0o020000 => 'c',
+        0o060000 => 'b',
+        0o010000 => 'p',
+        0o140000 => 's',
+        else => '?',
+    };
+    // Owner permissions
+    result[1] = if (mode & 0o400 != 0) 'r' else '-';
+    result[2] = if (mode & 0o200 != 0) 'w' else '-';
+    result[3] = if (mode & 0o4000 != 0) 's' else if (mode & 0o100 != 0) 'x' else '-';
+    // Group permissions
+    result[4] = if (mode & 0o040 != 0) 'r' else '-';
+    result[5] = if (mode & 0o020 != 0) 'w' else '-';
+    result[6] = if (mode & 0o2000 != 0) 's' else if (mode & 0o010 != 0) 'x' else '-';
+    // Other permissions
+    result[7] = if (mode & 0o004 != 0) 'r' else '-';
+    result[8] = if (mode & 0o002 != 0) 'w' else '-';
+    result[9] = if (mode & 0o1000 != 0) 't' else if (mode & 0o001 != 0) 'x' else '-';
+    return result;
+}
+
+/// Print detailed listing like `ls -dils` for a file
+fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
+    // Use statFile to get standard fs.Stat, then use POSIX stat for detailed fields
+    const stat = std.fs.cwd().statFile(path) catch return;
+
+    const c_path = allocator.dupeZ(u8, path) catch return;
+    defer allocator.free(c_path);
+    var pst: std.posix.Stat = undefined;
+    if (std.c.stat(c_path, &pst) != 0) return;
+
+    const mode_str = formatMode(@intCast(pst.mode));
+    const nlink = pst.nlink;
+    const uid = pst.uid;
+    const gid = pst.gid;
+    const size = pst.size;
+    const ino = pst.ino;
+    const blocks = pst.blocks;
+
+    // Format time like ls -l: "Mon DD HH:MM" or "Mon DD  YYYY"
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const mtime_sec: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+    const epoch_day = epoch.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+    const day_secs = epoch.getDaySeconds();
+
+    var time_buf: [64]u8 = undefined;
+    const time_str = blk: {
+        const now = std.time.timestamp();
+        const age_seconds = now - mtime_sec;
+        const six_months: i64 = 6 * 30 * 24 * 3600;
+        const month_idx = @intFromEnum(month_day.month) - 1;
+        if (@abs(age_seconds) > six_months) {
+            break :blk std.fmt.bufPrint(&time_buf, "{s} {: >2}  {d}", .{
+                months[month_idx],
+                month_day.day_index + 1,
+                year_day.year,
+            }) catch "??? ??  ????";
+        } else {
+            break :blk std.fmt.bufPrint(&time_buf, "{s} {: >2} {:0>2}:{:0>2}", .{
+                months[month_idx],
+                month_day.day_index + 1,
+                day_secs.getHoursIntoDay(),
+                day_secs.getMinutesIntoHour(),
+            }) catch "??? ?? ??:??";
+        }
+    };
+
+    // Look up user and group names (fallback to numeric IDs)
+    var uname_buf: [64]u8 = undefined;
+    var gname_buf: [64]u8 = undefined;
+    const uname = std.fmt.bufPrint(&uname_buf, "{d}", .{uid}) catch "?";
+    const gname = std.fmt.bufPrint(&gname_buf, "{d}", .{gid}) catch "?";
+
+    const basename = std.fs.path.basename(path);
+
+    // Format: ino blocks mode nlink owner group size time basename
+    var output_buf: [4096]u8 = undefined;
+    const output = std.fmt.bufPrint(&output_buf, "{d} {d} {s} {d} {s} {s} {d} {s} {s}\n", .{
+        ino,
+        @divFloor(blocks, 2), // GNU find -ls uses 1K blocks; st.blocks is 512-byte blocks
+        &mode_str,
+        nlink,
+        uname,
+        gname,
+        size,
+        time_str,
+        basename,
+    }) catch return;
+
+    _ = std.posix.write(std.posix.STDOUT_FILENO, output) catch {};
+}
+
 fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
     if (options.delete_matched) {
         deletePath(path);
@@ -1269,6 +1407,75 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             var child = std.process.Child.init(child_args.items, allocator);
             _ = child.spawnAndWait() catch {};
         }
+    } else if (options.ok_command) |cmd| {
+        // Build command line for display
+        var display_buf: [4096]u8 = undefined;
+        var db_pos: usize = 0;
+        for (cmd, 0..) |arg, idx| {
+            if (idx > 0) {
+                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+            }
+            const a = if (std.mem.eql(u8, arg, "{}")) path else arg;
+            if (db_pos + a.len < display_buf.len) {
+                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                db_pos += a.len;
+            }
+        }
+        const display = display_buf[0..db_pos];
+        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
+        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+
+        // Read one character from stdin
+        var buf: [1]u8 = undefined;
+        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
+            // Build command args, replacing {} with path
+            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            defer child_args.deinit(allocator);
+            for (cmd) |arg| {
+                if (std.mem.eql(u8, arg, "{}")) {
+                    child_args.append(allocator, path) catch {};
+                } else {
+                    child_args.append(allocator, arg) catch {};
+                }
+            }
+            if (child_args.items.len > 0) {
+                var child = std.process.Child.init(child_args.items, allocator);
+                _ = child.spawnAndWait() catch {};
+            }
+        }
+        // Consume rest of line
+        while (true) {
+            var discard: [1]u8 = undefined;
+            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            if (n == 0 or discard[0] == '\n') break;
+        }
+    } else if (options.execdir_command) |cmd| {
+        // Execute in the file's parent directory, replacing {} with basename
+        const basename = std.fs.path.basename(path);
+        const dirname = std.fs.path.dirname(path) orelse ".";
+        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        defer child_args.deinit(allocator);
+        for (cmd) |arg| {
+            if (std.mem.eql(u8, arg, "{}")) {
+                child_args.append(allocator, basename) catch {};
+            } else {
+                child_args.append(allocator, arg) catch {};
+            }
+        }
+        if (child_args.items.len > 0) {
+            // Save original cwd, chdir to parent, spawn child, restore cwd
+            const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+            defer if (original_cwd) |ocwd| allocator.free(ocwd);
+            _ = std.posix.chdir(dirname) catch {};
+            var child = std.process.Child.init(child_args.items, allocator);
+            _ = child.spawnAndWait() catch {};
+            if (original_cwd) |ocwd| {
+                _ = std.posix.chdir(ocwd) catch {};
+            }
+        }
+    } else if (options.list_detailed) {
+        printDetailedListing(path, allocator);
     } else if (options.printf_format) |fmt| {
         printFormatted(path, fmt, allocator);
     } else {
@@ -1351,6 +1558,11 @@ fn printUsage() void {
         \\
         \\Actions:
         \\  -prune PATTERN     Do not descend into directories matching PATTERN
+        \\  -exec CMD \;       Execute CMD for each matched file (replace {} with path)
+        \\  -ok CMD \;        Like -exec but prompts user before each execution
+        \\  -execdir CMD \;   Like -exec but runs CMD in file's parent directory
+        \\  -ls               Detailed listing of each file (like ls -dils)
+        \\  -delete            Delete matched files/directories
         \\
         \\Operators:
         \\  -not, !            Negate the following test
