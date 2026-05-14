@@ -84,6 +84,69 @@ find --cpu . -name "*.py"
 
 # Verbose output showing backend selection and timing
 find -V . -name "*.js"
+
+# -printf FORMAT: formatted output
+find . -name "*.c" -printf "%p %s bytes\\n"
+find . -type f -printf "%u %g %m %p\\n"
+find . -type f -printf "%T+ %p\\n"      # ISO 8601 timestamps
+find . -links +1 -printf "%n %p\\n"    # hard link count
+
+# -fprint / -fprintf: output to file
+find . -name "*.log" -fprint logs.txt
+find . -type f -fprintf files.lst "%p\\n"
+
+# -inum / -samefile: inode matching
+find . -inum 1234567
+find . -samefile /path/to/file
+
+# -links: hardlink count filter
+find . -links +1              # more than 1 hardlink
+find . -links 1               # exactly 1 hardlink
+
+# -nouser / -nogroup: unknown ownership
+find . -nouser
+find . -nogroup
+
+# -ok: interactive -exec
+find . -name "*.tmp" -ok rm {} \\;
+
+# -execdir / -okdir: execute in file's directory
+find . -name "*.py" -execdir python3 {} \\;
+find . -name "*.o" -okdir rm {} \\;
+
+# -readable / -writable / -executable
+find . -readable -name "*.conf"
+find . -writable -type f
+
+# -perm: permission filters
+find . -perm 644
+find . -perm /u=s             # any setuid/setgid/sticky bit
+find . -perm +111             # any execute bit
+find . -perm -444             # all read bits set
+
+# -amin / -cmin / -mmin: time in minutes
+find . -mmin -60              # modified < 60 min ago
+find . -amin +120             # accessed > 120 min ago
+
+# -newerXY: time comparison variants
+find . -newermm reference.txt # newer mtime than reference mtime
+
+# -follow / -L: follow symlinks
+find -L . -name "*.so"
+
+# -depth: depth-first traversal
+find . -depth -name "*.o"
+
+# -mount / -xdev: don't cross filesystems
+find / -mount -name "*.conf"
+
+# -ls: detailed listing
+find . -name "*.c" -ls
+
+# -true / -false / -quit
+find . -true
+find . -false
+find . -name "stop" -quit
 ```
 
 ## GNU Feature Compatibility
@@ -108,11 +171,40 @@ find -V . -name "*.js"
 | `-atime [+-]N` | ✓ | — | — | CPU only | **Native** |
 | `-ctime [+-]N` | ✓ | — | — | CPU only | **Native** |
 | `-prune PATTERN` | ✓ | — | — | CPU only | **Native** |
-| `-newer FILE` | — | — | — | — | GNU fallback |
-| `-exec` / `-execdir` | — | — | — | — | GNU fallback |
-| `-delete` | — | — | — | — | GNU fallback |
+| `-newer FILE` | ✓ | — | — | CPU only | **Native** |
+| `-newerXY` (a/B/c/m) | ✓ | — | — | CPU only | **Native** |
+| `-exec CMD` | ✓ | — | — | CPU only | **Native** |
+| `-execdir CMD` | ✓ | — | — | CPU only | **Native** |
+| `-ok CMD` | ✓ | — | — | CPU only | **Native** |
+| `-okdir CMD` | ✓ | — | — | CPU only | **Native** |
+| `-delete` | ✓ | — | — | CPU only | **Native** |
+| `-printf FORMAT` | ✓ | — | — | CPU only | **Native** |
+| `-fprint FILE` | ✓ | — | — | CPU only | **Native** |
+| `-fprintf FILE FORMAT` | ✓ | — | — | CPU only | **Native** |
+| `-ls` | ✓ | — | — | CPU only | **Native** |
+| `-inum N` | ✓ | — | — | CPU only | **Native** |
+| `-samefile FILE` | ✓ | — | — | CPU only | **Native** |
+| `-links N` | ✓ | — | — | CPU only | **Native** |
+| `-nouser` | ✓ | — | — | CPU only | **Native** |
+| `-nogroup` | ✓ | — | — | CPU only | **Native** |
+| `-readable` | ✓ | — | — | CPU only | **Native** |
+| `-writable` | ✓ | — | — | CPU only | **Native** |
+| `-executable` | ✓ | — | — | CPU only | **Native** |
+| `-perm MODE` | ✓ | — | — | CPU only | **Native** |
+| `-perm /MODE` (any bit) | ✓ | — | — | CPU only | **Native** |
+| `-perm +MODE` (any bit) | ✓ | — | — | CPU only | **Native** |
+| `-perm -MODE` (all bits) | ✓ | — | — | CPU only | **Native** |
+| `-amin [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-cmin [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-mmin [+-]N` | ✓ | — | — | CPU only | **Native** |
+| `-follow` / `-L` | ✓ | — | — | CPU only | **Native** |
+| `-depth` | ✓ | — | — | CPU only | **Native** |
+| `-mount` / `-xdev` | ✓ | — | — | CPU only | **Native** |
+| `-true` | ✓ | — | — | CPU only | **Native** |
+| `-false` | ✓ | — | — | CPU only | **Native** |
+| `-quit` | ✓ | — | — | CPU only | **Native** |
 
-**Test Coverage**: 36/36 GNU compatibility tests passing
+**Test Coverage**: 50+/50+ GNU compatibility tests passing
 
 ## Pattern Syntax
 
@@ -382,17 +474,18 @@ zig build -Doptimize=ReleaseFast
 # Run tests
 zig build test      # Unit tests
 zig build smoke     # Integration tests (GPU verification)
-bash gnu-tests.sh   # GNU compatibility tests (36 tests)
+bash gnu-tests.sh   # GNU compatibility tests (50+ tests)
 ```
 
 ## Recent Changes
 
+- **GNU Feature Parity**: Added 30+ GNU features including `-printf`, `-fprint`, `-fprintf`, `-execdir`, `-ok`, `-okdir`, `-ls`, `-inum`, `-samefile`, `-links`, `-nouser`, `-nogroup`, `-readable`, `-writable`, `-executable`, `-perm` (with `/`, `+`, `-` modes), `-amin`/`-cmin`/`-mmin`, `-newerXY`, `-follow`/`-L`, `-depth`, `-mount`/`-xdev`, `-true`, `-false`, `-quit`
 - **GPU Regex**: Native `-regex` and `-iregex` with Thompson NFA GPU acceleration (Metal + Vulkan)
 - **Size Filter**: Native `-size [+-]N[ckMG]` support for filtering by file size
 - **Time Filters**: Native `-mtime`, `-atime`, `-ctime` with `[+-]N` syntax
 - **Prune**: Native `-prune PATTERN` to skip directories matching glob patterns
 - **macOS Compatibility**: Proper handling of macOS i128 nanosecond timestamps
-- **Test Coverage**: 36 GNU compatibility tests passing
+- **Test Coverage**: 50+ GNU compatibility tests passing
 
 ## License
 
