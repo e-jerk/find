@@ -126,6 +126,23 @@ const TimeType = enum {
     changed, // -ctime (st_ctime)
 };
 
+/// Convert a character to TimeType for -newerXY parsing
+fn charToTimeType(c: u8) TimeType {
+    return switch (c) {
+        'a' => .accessed,
+        'c' => .changed,
+        'm' => .modified,
+        else => .modified, // default to m
+    };
+}
+
+/// -newerXY filter: compare time X of file to time Y of reference
+const NewerXYFilter = struct {
+    file_time_type: TimeType, // X: which time of the evaluated file
+    ref_time_type: TimeType, // Y: which time of the reference file
+    ref_path: []const u8,
+};
+
 /// Time filter for -mtime/-atime/-ctime/-mmin/-amin/-cmin options
 const TimeFilter = struct {
     days: i64, // Number of days (or minutes when is_minutes=true)
@@ -216,7 +233,8 @@ const FindOptions = struct {
     execdir_command: ?[]const []const u8 = null, // -execdir command args ;
     okdir_command: ?[]const []const u8 = null, // -okdir command args ;
     list_detailed: bool = false, // -ls
-    newer_than: ?[]const u8 = null, // -newer FILE
+    newer_than: ?[]const u8 = null, // -newer FILE (legacy, same as -newermm)
+    newer_xy: ?NewerXYFilter = null, // -newerXY reference
     user_name: ?[]const u8 = null, // -user NAME
     group_name: ?[]const u8 = null, // -group NAME
     perm_mode: ?[]const u8 = null, // -perm MODE
@@ -389,9 +407,22 @@ pub fn main() !u8 {
             options.prune_pattern = args[i];
         } else if (std.mem.eql(u8, arg, "-delete")) {
             options.delete_matched = true;
-        } else if (std.mem.eql(u8, arg, "-newer") and i + 1 < args.len) {
+        } else if (std.mem.startsWith(u8, arg, "-newer") and i + 1 < args.len) {
             i += 1;
-            options.newer_than = args[i];
+            const ref_path = args[i];
+            if (arg.len == 6) {
+                // -newer alone = -newermm
+                options.newer_xy = NewerXYFilter{ .file_time_type = .modified, .ref_time_type = .modified, .ref_path = ref_path };
+            } else if (arg.len >= 8) {
+                // -newerXY where X and Y are each a/c/m
+                const x = arg[6];
+                const y = arg[7];
+                options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = charToTimeType(y), .ref_path = ref_path };
+            } else {
+                // -newerX (single suffix) = -newerXm
+                const x = arg[6];
+                options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = .modified, .ref_path = ref_path };
+            }
         } else if (std.mem.eql(u8, arg, "-user") and i + 1 < args.len) {
             i += 1;
             options.user_name = args[i];
@@ -1056,12 +1087,22 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
         break :blk tf.matches(file_time, now);
     } else true;
 
-    // Check -newer filter
-    const passes_newer_filter = if (options.newer_than) |ref_path| blk: {
-        const ref_stat = std.fs.cwd().statFile(ref_path) catch {
+    // Check -newer / -newerXY filter
+    const passes_newer_filter = if (options.newer_xy) |nf| blk: {
+        const ref_stat = std.fs.cwd().statFile(nf.ref_path) catch {
             break :blk false;
         };
-        break :blk stat.mtime > ref_stat.mtime;
+        const file_time = switch (nf.file_time_type) {
+            .modified => stat.mtime,
+            .accessed => stat.atime,
+            .changed => stat.ctime,
+        };
+        const ref_time = switch (nf.ref_time_type) {
+            .modified => ref_stat.mtime,
+            .accessed => ref_stat.atime,
+            .changed => ref_stat.ctime,
+        };
+        break :blk file_time > ref_time;
     } else true;
 
     // Check -user filter
@@ -1842,56 +1883,44 @@ fn printUsage() void {
         \\  -mtime [+-]N       File modified N*24 hours ago (+N older, -N newer)
         \\  -atime [+-]N       File accessed N*24 hours ago
         \\  -ctime [+-]N       File status changed N*24 hours ago
-        \\
-        \\Actions:
+        \\  -mmin [+-]N        File modified N minutes ago
+        \\  -amin [+-]N         File accessed N minutes ago
+        \\  -cmin [+-]N         File status changed N minutes ago
+        \\  -newer FILE        File is newer than FILE (modification time)
+        \\  -newerXY FILE      File time X newer than reference time Y
+        \\                      X,Y: a=access, c=change, m=modify
         \\  -prune PATTERN     Do not descend into directories matching PATTERN
         \\  -exec CMD \;       Execute CMD for each matched file (replace {} with path)
         \\  -ok CMD \;        Like -exec but prompts user before each execution
         \\  -execdir CMD \;   Like -exec but runs CMD in file's parent directory
         \\  -ls               Detailed listing of each file (like ls -dils)
         \\  -delete            Delete matched files/directories
-        \\
-        \\Operators:
         \\  -not, !            Negate the following test
-        \\
-        \\Options:
         \\  -maxdepth LEVELS  Descend at most LEVELS of directories
         \\  -mindepth LEVELS  Skip tests at levels less than LEVELS
         \\  -print0           Print paths followed by NUL instead of newline
         \\  -count            Print count of matches (extension)
-        \\
-        \\Backend Selection:
         \\  --auto            Auto-select optimal backend (default)
         \\  --gpu             Force GPU (Metal on macOS, Vulkan on Linux)
         \\  --cpu             Force CPU backend (SIMD-optimized)
         \\  --metal           Force Metal backend (macOS only)
         \\  --vulkan          Force Vulkan backend
-        \\
-        \\Miscellaneous:
         \\  -v, --verbose     Print backend and timing information
         \\  -h, --help        Display this help and exit
         \\      --version     Output version information and exit
-        \\
-        \\Pattern Wildcards:                               [GPU+SIMD]
         \\  *      matches any string (including empty)
         \\  ?      matches any single character
         \\  [abc]  matches any character in the set
         \\  [a-z]  matches any character in the range
         \\  [!abc] matches any character NOT in the set
-        \\
-        \\Optimization Notes:
         \\  [GPU+SIMD] Pattern matching uses GPU compute shaders (Metal/Vulkan)
         \\             for parallel glob evaluation. CPU fallback uses 16/32-byte
         \\             SIMD vector operations for accelerated string comparison.
         \\  [CPU]      File type and attribute tests require filesystem syscalls
         \\             and cannot be GPU-accelerated.
-        \\
-        \\Performance (typical GPU speedups over CPU):
         \\  10K files:   ~4x faster
         \\  100K files:  ~7x faster
         \\  1M files:    ~10x faster
-        \\
-        \\Examples:
         \\  find . -name '*.txt'              Find all .txt files
         \\  find . -iname '*.jpg'             Case-insensitive search
         \\  find /var/log -type f -name '*.log'
