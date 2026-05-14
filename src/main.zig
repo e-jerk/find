@@ -246,7 +246,14 @@ const FindOptions = struct {
     always_false: bool = false, // -false
     quit_after_first: bool = false, // -quit
     printf_format: ?[]const u8 = null, // -printf FORMAT
+    fprint_file: ?[]const u8 = null, // -fprint FILE
+    fprintf_file: ?[]const u8 = null, // -fprintf FILE FORMAT
+    fprintf_format: ?[]const u8 = null, // -fprintf FILE FORMAT
     start_device: ?u64 = null, // Device ID of start path for -mount
+    inode_number: ?u64 = null, // -inum N
+    samefile_path: ?[]const u8 = null, // -samefile FILE
+    no_user: bool = false, // -nouser
+    no_group: bool = false, // -nogroup
     readable: bool = false, // -readable
     writable: bool = false, // -writable
     executable: bool = false, // -executable
@@ -453,6 +460,27 @@ pub fn main() !u8 {
         } else if (std.mem.eql(u8, arg, "-printf") and i + 1 < args.len) {
             i += 1;
             options.printf_format = args[i];
+        } else if (std.mem.eql(u8, arg, "-fprint") and i + 1 < args.len) {
+            i += 1;
+            options.fprint_file = args[i];
+        } else if (std.mem.eql(u8, arg, "-fprintf") and i + 2 < args.len) {
+            i += 1;
+            options.fprintf_file = args[i];
+            i += 1;
+            options.fprintf_format = args[i];
+        } else if (std.mem.eql(u8, arg, "-inum") and i + 1 < args.len) {
+            i += 1;
+            options.inode_number = std.fmt.parseInt(u64, args[i], 10) catch {
+                std.debug.print("Invalid -inum value: {s}\n", .{args[i]});
+                return 1;
+            };
+        } else if (std.mem.eql(u8, arg, "-samefile") and i + 1 < args.len) {
+            i += 1;
+            options.samefile_path = args[i];
+        } else if (std.mem.eql(u8, arg, "-nouser")) {
+            options.no_user = true;
+        } else if (std.mem.eql(u8, arg, "-nogroup")) {
+            options.no_group = true;
         } else if (std.mem.eql(u8, arg, "-exec")) {
             // Collect command and args until ; or +
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
@@ -1178,11 +1206,41 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
         break :blk posix_stat.?.nlink == n;
     } else true;
 
+    // Check -inum filter
+    const passes_inode_filter = if (options.inode_number) |inum| blk: {
+        if (posix_stat == null) break :blk false;
+        break :blk @as(u64, @intCast(posix_stat.?.ino)) == inum;
+    } else true;
+
+    // Check -samefile filter
+    const passes_samefile_filter = if (options.samefile_path) |sf_path| blk: {
+        if (posix_stat == null) break :blk false;
+        const c_sf_path = std.heap.page_allocator.dupeZ(u8, sf_path) catch { break :blk false; };
+        defer std.heap.page_allocator.free(c_sf_path);
+        var st: std.posix.Stat = undefined;
+        if (std.c.stat(c_sf_path, &st) != 0) break :blk false;
+        break :blk posix_stat.?.ino == st.ino and posix_stat.?.dev == st.dev;
+    } else true;
+
+    // Check -nouser filter
+    const passes_nouser_filter = if (options.no_user) blk: {
+        if (posix_stat == null) break :blk false;
+        const pw = std.c.getpwuid(posix_stat.?.uid);
+        break :blk pw == null;
+    } else true;
+
+    // Check -nogroup filter
+    const passes_nogroup_filter = if (options.no_group) blk: {
+        if (posix_stat == null) break :blk false;
+        const gr = std.c.getgrgid(posix_stat.?.gid);
+        break :blk gr == null;
+    } else true;
+
     // Check -true / -false
     if (options.always_false) return false;
     // -true doesn't override other filters, it just adds no constraint
 
-    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter and passes_access_filter;
+    return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter and passes_access_filter and passes_inode_filter and passes_samefile_filter and passes_nouser_filter and passes_nogroup_filter;
 }
 
 fn walkDirectory(
@@ -1209,7 +1267,7 @@ fn walkDirectory(
                     return stat_err;
                 };
 
-                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
+                const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null or options.inode_number != null or options.samefile_path != null or options.no_user or options.no_group;
                 const posix_stat = if (need_posix_stat) blk: {
                     const c_path = allocator.dupeZ(u8, path) catch break :blk null;
                     defer allocator.free(c_path);
@@ -1321,6 +1379,324 @@ fn printPath(path: []const u8, print0: bool) void {
     }
 }
 
+fn printPathToFile(path: []const u8, print0: bool, outfile: []const u8) void {
+    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+        if (err == error.FileNotFound) {
+            // Create the file
+            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
+            defer new_file.close();
+            if (print0) {
+                _ = new_file.write(path) catch {};
+                _ = new_file.write(&[_]u8{0}) catch {};
+            } else {
+                _ = new_file.write(path) catch {};
+                _ = new_file.write("\n") catch {};
+            }
+            return;
+        }
+        return;
+    };
+    defer file.close();
+    // Append to existing file
+    file.seekFromEnd(0) catch {};
+    if (print0) {
+        _ = file.write(path) catch {};
+        _ = file.write(&[_]u8{0}) catch {};
+    } else {
+        _ = file.write(path) catch {};
+        _ = file.write("\n") catch {};
+    }
+}
+
+fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    defer output.deinit(allocator);
+
+    // Cache stat info lazily
+    var stat_cache: ?std.posix.Stat = null;
+    var fs_stat_cache: ?std.fs.File.Stat = null;
+
+    const getPstat = struct {
+        s: *?std.posix.Stat,
+        p: []const u8,
+        a: std.mem.Allocator,
+        fn get(self: @This()) ?*std.posix.Stat {
+            if (self.s.* == null) {
+                const c_path = self.a.dupeZ(u8, self.p) catch return null;
+                defer self.a.free(c_path);
+                var st: std.posix.Stat = undefined;
+                if (std.c.stat(c_path, &st) == 0) {
+                    self.s.* = st;
+                }
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const getFstat = struct {
+        s: *?std.fs.File.Stat,
+        p: []const u8,
+        fn get(self: @This()) ?*std.fs.File.Stat {
+            if (self.s.* == null) {
+                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+            }
+            return if (self.s.*) |*st| st else null;
+        }
+    };
+    const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+
+    var i: usize = 0;
+    while (i < format.len) : (i += 1) {
+        if (format[i] == '%' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'p' => output.appendSlice(allocator, path) catch {},
+                'f' => output.appendSlice(allocator, std.fs.path.basename(path)) catch {},
+                'd' => {
+                    const dirname = std.fs.path.dirname(path);
+                    output.appendSlice(allocator, dirname orelse ".") catch {};
+                },
+                's' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'U' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'G' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'm' => {
+                    if (pstat.get()) |st| {
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'M' => {
+                    if (pstat.get()) |st| {
+                        const mode: u16 = @intCast(st.mode);
+                        const file_type_char = fileTypeChar(mode);
+                        const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
+                        const rwx = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
+                            if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
+                        };
+                        const rwxg = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
+                            if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
+                        };
+                        const rwxo = [3]u8{
+                            if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
+                            if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
+                        };
+                        var buf: [16]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
+                            file_type_char,
+                            &rwx,
+                            &rwxg,
+                            &rwxo,
+                        }) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'u' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getpwuid(st.uid)) |pw| {
+                            if (pw.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'g' => {
+                    if (pstat.get()) |st| {
+                        if (std.c.getgrgid(st.gid)) |gr| {
+                            if (gr.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
+                    }
+                },
+                'y' => {
+                    if (pstat.get()) |st| {
+                        const c = fileTypeCharShort(@intCast(st.mode));
+                        output.append(allocator, c) catch {};
+                    }
+                },
+                'i' => {
+                    if (pstat.get()) |st| {
+                        var buf: [32]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'n' => {
+                    if (pstat.get()) |st| {
+                        var buf: [8]u8 = undefined;
+                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
+                        output.appendSlice(allocator, str) catch {};
+                    }
+                },
+                'T' => {
+                    // Time format: %T@ = seconds since epoch, %T+ = ISO-like, %TY = year, etc.
+                    if (i + 1 < format.len) {
+                        i += 1;
+                        const time_esc = format[i];
+                        if (fstat.get()) |st| {
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            switch (time_esc) {
+                                '@' => {
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                '+' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const epoch_day = epoch.getEpochDay();
+                                    const year_day = epoch_day.calculateYearDay();
+                                    const month_day = year_day.calculateMonthDay();
+                                    const day_secs = epoch.getDaySeconds();
+                                    var buf: [64]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
+                                        year_day.year,
+                                        month_day.month,
+                                        month_day.day_index + 1,
+                                        day_secs.getHoursIntoDay(),
+                                        day_secs.getMinutesIntoHour(),
+                                        day_secs.getSecondsIntoMinute(),
+                                    }) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'Y' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const year_day = epoch.getEpochDay().calculateYearDay();
+                                    var buf: [16]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'm' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'd' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'H' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'M' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                'S' => {
+                                    const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
+                                    var buf: [8]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
+                                    output.appendSlice(allocator, str) catch {};
+                                },
+                                else => {
+                                    output.append(allocator, '%') catch {};
+                                    output.append(allocator, 'T') catch {};
+                                    output.append(allocator, time_esc) catch {};
+                                },
+                            }
+                        }
+                    }
+                },
+                '%' => output.append(allocator, '%') catch {},
+                else => {
+                    output.append(allocator, '%') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else if (format[i] == '\\' and i + 1 < format.len) {
+            i += 1;
+            const esc = format[i];
+            switch (esc) {
+                'n' => output.append(allocator, '\n') catch {},
+                't' => output.append(allocator, '\t') catch {},
+                'r' => output.append(allocator, '\r') catch {},
+                '0'...'7' => {
+                    // Octal escape: up to 3 digits
+                    var octal_val: u8 = esc - '0';
+                    var j: usize = 0;
+                    while (j < 2 and i + 1 < format.len and format[i + 1] >= '0' and format[i + 1] <= '7') : (j += 1) {
+                        i += 1;
+                        octal_val = octal_val * 8 + (format[i] - '0');
+                    }
+                    if (j > 0) {
+                        output.append(allocator, octal_val) catch {};
+                        i += j - 1;
+                    } else {
+                        output.append(allocator, '\\') catch {};
+                        output.append(allocator, esc) catch {};
+                    }
+                },
+                else => {
+                    output.append(allocator, '\\') catch {};
+                    output.append(allocator, esc) catch {};
+                },
+            }
+        } else {
+            output.append(allocator, format[i]) catch {};
+        }
+    }
+
+    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+        if (err == error.FileNotFound) {
+            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
+            defer new_file.close();
+            _ = new_file.write(output.items) catch {};
+            return;
+        }
+        return;
+    };
+    defer file.close();
+    _ = file.seekFromEnd(0) catch 0;
+    _ = file.write(output.items) catch {};
+}
+
 fn deletePath(path: []const u8) void {
     // Try to delete as file first, then as empty directory
     std.fs.cwd().deleteFile(path) catch {
@@ -1427,20 +1803,26 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                     if (pstat.get()) |st| {
                         const mode: u16 = @intCast(st.mode);
                         const file_type_char = fileTypeChar(mode);
+                        const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
                         const rwx = [3]u8{
                             if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
                             if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
-                            if (mode & @as(u16, @intCast(std.posix.S.IXUSR)) != 0) 'x' else '-',
+                            if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
                         };
                         const rwxg = [3]u8{
                             if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
                             if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
-                            if (mode & @as(u16, @intCast(std.posix.S.IXGRP)) != 0) 'x' else '-',
+                            if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
                         };
                         const rwxo = [3]u8{
                             if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
                             if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
-                            if (mode & @as(u16, @intCast(std.posix.S.IXOTH)) != 0) 'x' else '-',
+                            if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
                         };
                         var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
@@ -1454,16 +1836,28 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 },
                 'u' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
-                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
-                        output.appendSlice(allocator, str) catch {};
+                        if (std.c.getpwuid(st.uid)) |pw| {
+                            if (pw.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
                     }
                 },
                 'g' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
-                        const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
-                        output.appendSlice(allocator, str) catch {};
+                        if (std.c.getgrgid(st.gid)) |gr| {
+                            if (gr.name) |name| {
+                                output.appendSlice(allocator, std.mem.span(name)) catch {};
+                            }
+                        } else {
+                            var buf: [32]u8 = undefined;
+                            const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
+                            output.appendSlice(allocator, str) catch {};
+                        }
                     }
                 },
                 'y' => {
@@ -1869,6 +2263,12 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         }
     } else if (options.list_detailed) {
         printDetailedListing(path, allocator);
+    } else if (options.fprintf_file) |outfile| {
+        if (options.fprintf_format) |fmt| {
+            printFormattedToFile(path, fmt, outfile, allocator);
+        }
+    } else if (options.fprint_file) |outfile| {
+        printPathToFile(path, options.print0, outfile);
     } else if (options.printf_format) |fmt| {
         printFormatted(path, fmt, allocator);
     } else {
