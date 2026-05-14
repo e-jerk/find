@@ -1075,6 +1075,15 @@ fn findFilesWithRegexCpu(
 
 const QuitError = error{QuitRequested};
 
+/// Check if a directory has no entries (other than . and ..)
+fn isDirEmpty(path: []const u8) bool {
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return false;
+    defer dir.close();
+    var iter = dir.iterate();
+    const entry = iter.next() catch return false;
+    return entry == null;
+}
+
 /// Check if a file/directory passes all metadata filters
 fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
     const passes_type_filter = switch (options.file_type) {
@@ -1091,7 +1100,13 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -empty: file is empty if size == 0, dir is empty if no entries
     var passes_empty_filter = true;
     if (options.empty_only) {
-        passes_empty_filter = (stat.kind == .file and stat.size == 0) or (stat.kind == .directory);
+        if (stat.kind == .file) {
+            passes_empty_filter = stat.size == 0;
+        } else if (stat.kind == .directory) {
+            passes_empty_filter = isDirEmpty(path);
+        } else {
+            passes_empty_filter = false;
+        }
     }
     if (options.negate_pattern and options.empty_only) {
         passes_empty_filter = !passes_empty_filter;
@@ -2491,40 +2506,40 @@ test "SizeFilter: matches function" {
 
 test "parseTimeArg: basic time parsing" {
     // Exact days
-    const time_exact = parseTimeArg("5", .modified);
+    const time_exact = parseTimeArg("5", .modified, false);
     try std.testing.expect(time_exact != null);
     try std.testing.expectEqual(@as(i64, 5), time_exact.?.days);
     try std.testing.expectEqual(TimeComparison.exact, time_exact.?.comparison);
     try std.testing.expectEqual(TimeType.modified, time_exact.?.time_type);
 
     // Different time types
-    const time_atime = parseTimeArg("3", .accessed);
+    const time_atime = parseTimeArg("3", .accessed, false);
     try std.testing.expect(time_atime != null);
     try std.testing.expectEqual(TimeType.accessed, time_atime.?.time_type);
 
-    const time_ctime = parseTimeArg("7", .changed);
+    const time_ctime = parseTimeArg("7", .changed, false);
     try std.testing.expect(time_ctime != null);
     try std.testing.expectEqual(TimeType.changed, time_ctime.?.time_type);
 }
 
 test "parseTimeArg: comparison operators" {
     // More than N days ago (older)
-    const time_older = parseTimeArg("+7", .modified);
+    const time_older = parseTimeArg("+7", .modified, false);
     try std.testing.expect(time_older != null);
     try std.testing.expectEqual(TimeComparison.older, time_older.?.comparison);
     try std.testing.expectEqual(@as(i64, 7), time_older.?.days);
 
     // Less than N days ago (newer)
-    const time_newer = parseTimeArg("-1", .modified);
+    const time_newer = parseTimeArg("-1", .modified, false);
     try std.testing.expect(time_newer != null);
     try std.testing.expectEqual(TimeComparison.newer, time_newer.?.comparison);
     try std.testing.expectEqual(@as(i64, 1), time_newer.?.days);
 }
 
 test "parseTimeArg: invalid inputs" {
-    try std.testing.expect(parseTimeArg("", .modified) == null);
-    try std.testing.expect(parseTimeArg("+", .modified) == null);
-    try std.testing.expect(parseTimeArg("abc", .modified) == null);
+    try std.testing.expect(parseTimeArg("", .modified, false) == null);
+    try std.testing.expect(parseTimeArg("+", .modified, false) == null);
+    try std.testing.expect(parseTimeArg("abc", .modified, false) == null);
 }
 
 test "TimeFilter: matches function" {

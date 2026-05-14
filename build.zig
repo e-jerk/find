@@ -167,6 +167,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link libc for std.c functions (stat, getpwuid, getgrgid, access)
+    exe.linkLibC();
+
     // Platform-specific linking based on enabled backends
     if (is_native) {
         if (enable_metal) {
@@ -215,6 +218,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Link libc for tests
+    unit_tests.linkLibC();
+
     if (is_native) {
         if (enable_metal) {
             unit_tests.linkFramework("Foundation");
@@ -248,6 +254,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    // Link libc for tests
+    extra_tests.linkLibC();
 
     if (is_native) {
         if (enable_metal) {
@@ -306,6 +315,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    // Link libc for smoke tests
+    smoke_tests.linkLibC();
 
     if (is_native) {
         if (enable_metal) {
