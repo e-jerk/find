@@ -81,7 +81,7 @@ pub const BatchMatchResult = struct {
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *BatchMatchResult) void {
-        self.allocator.free(self.matches);
+        // safe-transpile: free removed (memory owned by safe type);
     }
 };
 

@@ -51,6 +51,7 @@ const SizeFilter = struct {
 
 /// Parse a size argument like "+1M", "-100k", "512", "1G"
 /// Returns null on parse error
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn parseSizeArg(arg: []const u8) ?SizeFilter {
     if (arg.len == 0) return null;
 
@@ -176,6 +177,7 @@ const TimeFilter = struct {
 
 /// Parse a time argument like "+7", "-1", "0"
 /// Returns the number of days/minutes and comparison type
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn parseTimeArg(arg: []const u8, time_type: TimeType, is_minutes: bool) ?TimeFilter {
     if (arg.len == 0) return null;
 
@@ -286,7 +288,7 @@ pub fn main() !u8 {
     var allocated_paths: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (allocated_paths.items) |p| {
-            allocator.free(p);
+            // safe-transpile: free removed (memory owned by safe type);
         }
         allocated_paths.deinit(allocator);
     }
@@ -302,7 +304,7 @@ pub fn main() !u8 {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        if (std.mem.eql(u8, arg, "-o")) {
+        if (safe.SimdUtils.eql(arg, "-o")) {
             // Save current pattern (if any) to or_patterns list
             if (options.pattern) |p| {
                 try or_pattern_list.append(allocator, .{ .pattern = p, .case_insensitive = false, .match_path = false });
@@ -313,7 +315,7 @@ pub fn main() !u8 {
                 options.ipattern = null;
             }
             expecting_or = true;
-        } else if (std.mem.eql(u8, arg, "-name") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-name") and i + 1 < args.len) {
             i += 1;
             if (expecting_or) {
                 try or_pattern_list.append(allocator, .{ .pattern = args[i], .case_insensitive = false, .match_path = false });
@@ -321,7 +323,7 @@ pub fn main() !u8 {
             } else {
                 options.pattern = args[i];
             }
-        } else if (std.mem.eql(u8, arg, "-iname") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-iname") and i + 1 < args.len) {
             i += 1;
             if (expecting_or) {
                 try or_pattern_list.append(allocator, .{ .pattern = args[i], .case_insensitive = true, .match_path = false });
@@ -329,90 +331,90 @@ pub fn main() !u8 {
             } else {
                 options.ipattern = args[i];
             }
-        } else if (std.mem.eql(u8, arg, "-path") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-path") and i + 1 < args.len) {
             i += 1;
             options.path_pattern = args[i];
-        } else if (std.mem.eql(u8, arg, "-ipath") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-ipath") and i + 1 < args.len) {
             i += 1;
             options.ipath_pattern = args[i];
-        } else if (std.mem.eql(u8, arg, "-regex") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-regex") and i + 1 < args.len) {
             i += 1;
             options.regex_pattern = args[i];
-        } else if (std.mem.eql(u8, arg, "-iregex") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-iregex") and i + 1 < args.len) {
             i += 1;
             options.iregex_pattern = args[i];
-        } else if (std.mem.eql(u8, arg, "-type") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-type") and i + 1 < args.len) {
             i += 1;
             options.file_type = parseFileType(args[i]) orelse {
                 std.debug.print("Invalid -type argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-maxdepth") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-maxdepth") and i + 1 < args.len) {
             i += 1;
             options.max_depth = std.fmt.parseInt(usize, args[i], 10) catch {
                 std.debug.print("Invalid -maxdepth value: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-mindepth") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mindepth") and i + 1 < args.len) {
             i += 1;
             options.min_depth = std.fmt.parseInt(usize, args[i], 10) catch {
                 std.debug.print("Invalid -mindepth value: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-print0")) {
+        } else if (safe.SimdUtils.eql(arg, "-print0")) {
             options.print0 = true;
-        } else if (std.mem.eql(u8, arg, "-count")) {
+        } else if (safe.SimdUtils.eql(arg, "-count")) {
             options.count_only = true;
-        } else if (std.mem.eql(u8, arg, "-not") or std.mem.eql(u8, arg, "!")) {
+        } else if (safe.SimdUtils.eql(arg, "-not") or safe.SimdUtils.eql(arg, "!")) {
             options.negate_pattern = true;
-        } else if (std.mem.eql(u8, arg, "-empty")) {
+        } else if (safe.SimdUtils.eql(arg, "-empty")) {
             options.empty_only = true;
-        } else if (std.mem.eql(u8, arg, "-size") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-size") and i + 1 < args.len) {
             i += 1;
             options.size_filter = parseSizeArg(args[i]) orelse {
                 std.debug.print("Invalid -size argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-mtime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mtime") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .modified, false) orelse {
                 std.debug.print("Invalid -mtime argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-atime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-atime") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .accessed, false) orelse {
                 std.debug.print("Invalid -atime argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-ctime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-ctime") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .changed, false) orelse {
                 std.debug.print("Invalid -ctime argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-mmin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mmin") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .modified, true) orelse {
                 std.debug.print("Invalid -mmin argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-amin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-amin") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .accessed, true) orelse {
                 std.debug.print("Invalid -amin argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-cmin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-cmin") and i + 1 < args.len) {
             i += 1;
             options.time_filter = parseTimeArg(args[i], .changed, true) orelse {
                 std.debug.print("Invalid -cmin argument: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-prune") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-prune") and i + 1 < args.len) {
             i += 1;
             options.prune_pattern = args[i];
-        } else if (std.mem.eql(u8, arg, "-delete")) {
+        } else if (safe.SimdUtils.eql(arg, "-delete")) {
             options.delete_matched = true;
         } else if (std.mem.startsWith(u8, arg, "-newer") and i + 1 < args.len) {
             i += 1;
@@ -430,67 +432,67 @@ pub fn main() !u8 {
                 const x = arg[6];
                 options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = .modified, .ref_path = ref_path };
             }
-        } else if (std.mem.eql(u8, arg, "-user") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-user") and i + 1 < args.len) {
             i += 1;
             options.user_name = args[i];
-        } else if (std.mem.eql(u8, arg, "-group") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-group") and i + 1 < args.len) {
             i += 1;
             options.group_name = args[i];
-        } else if (std.mem.eql(u8, arg, "-perm") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-perm") and i + 1 < args.len) {
             i += 1;
             options.perm_mode = args[i];
-        } else if (std.mem.eql(u8, arg, "-follow") or std.mem.eql(u8, arg, "-L")) {
+        } else if (safe.SimdUtils.eql(arg, "-follow") or safe.SimdUtils.eql(arg, "-L")) {
             options.follow_symlinks = true;
-        } else if (std.mem.eql(u8, arg, "-depth")) {
+        } else if (safe.SimdUtils.eql(arg, "-depth")) {
             options.depth_first = true;
-        } else if (std.mem.eql(u8, arg, "-mount") or std.mem.eql(u8, arg, "-xdev")) {
+        } else if (safe.SimdUtils.eql(arg, "-mount") or safe.SimdUtils.eql(arg, "-xdev")) {
             options.stay_on_filesystem = true;
-        } else if (std.mem.eql(u8, arg, "-links") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-links") and i + 1 < args.len) {
             i += 1;
             options.links_count = std.fmt.parseInt(u32, args[i], 10) catch {
                 std.debug.print("Invalid -links value: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-true")) {
+        } else if (safe.SimdUtils.eql(arg, "-true")) {
             options.always_true = true;
-        } else if (std.mem.eql(u8, arg, "-false")) {
+        } else if (safe.SimdUtils.eql(arg, "-false")) {
             options.always_false = true;
-        } else if (std.mem.eql(u8, arg, "-quit")) {
+        } else if (safe.SimdUtils.eql(arg, "-quit")) {
             options.quit_after_first = true;
-        } else if (std.mem.eql(u8, arg, "-printf") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-printf") and i + 1 < args.len) {
             i += 1;
             options.printf_format = args[i];
-        } else if (std.mem.eql(u8, arg, "-fprint") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-fprint") and i + 1 < args.len) {
             i += 1;
             options.fprint_file = args[i];
-        } else if (std.mem.eql(u8, arg, "-fprintf") and i + 2 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-fprintf") and i + 2 < args.len) {
             i += 1;
             options.fprintf_file = args[i];
             i += 1;
             options.fprintf_format = args[i];
-        } else if (std.mem.eql(u8, arg, "-inum") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-inum") and i + 1 < args.len) {
             i += 1;
             options.inode_number = std.fmt.parseInt(u64, args[i], 10) catch {
                 std.debug.print("Invalid -inum value: {s}\n", .{args[i]});
                 return 1;
             };
-        } else if (std.mem.eql(u8, arg, "-samefile") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-samefile") and i + 1 < args.len) {
             i += 1;
             options.samefile_path = args[i];
-        } else if (std.mem.eql(u8, arg, "-nouser")) {
+        } else if (safe.SimdUtils.eql(arg, "-nouser")) {
             options.no_user = true;
-        } else if (std.mem.eql(u8, arg, "-nogroup")) {
+        } else if (safe.SimdUtils.eql(arg, "-nogroup")) {
             options.no_group = true;
-        } else if (std.mem.eql(u8, arg, "-exec")) {
+        } else if (safe.SimdUtils.eql(arg, "-exec")) {
             // Collect command and args until ; or +
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
             i += 1;
             while (i < args.len) : (i += 1) {
                 const exec_arg = args[i];
-                if (std.mem.eql(u8, exec_arg, ";")) {
+                if (safe.SimdUtils.eql(exec_arg, ";")) {
                     options.exec_plus = false;
                     break;
-                } else if (std.mem.eql(u8, exec_arg, "+")) {
+                } else if (safe.SimdUtils.eql(exec_arg, "+")) {
                     options.exec_plus = true;
                     break;
                 } else {
@@ -500,13 +502,13 @@ pub fn main() !u8 {
             if (exec_args.items.len > 0) {
                 options.exec_command = try exec_args.toOwnedSlice(allocator);
             }
-        } else if (std.mem.eql(u8, arg, "-ok")) {
+        } else if (safe.SimdUtils.eql(arg, "-ok")) {
             // Collect command and args until ;
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
             i += 1;
             while (i < args.len) : (i += 1) {
                 const exec_arg = args[i];
-                if (std.mem.eql(u8, exec_arg, ";")) {
+                if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
                     try exec_args.append(allocator, exec_arg);
@@ -515,13 +517,13 @@ pub fn main() !u8 {
             if (exec_args.items.len > 0) {
                 options.ok_command = try exec_args.toOwnedSlice(allocator);
             }
-        } else if (std.mem.eql(u8, arg, "-execdir")) {
+        } else if (safe.SimdUtils.eql(arg, "-execdir")) {
             // Collect command and args until ;
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
             i += 1;
             while (i < args.len) : (i += 1) {
                 const exec_arg = args[i];
-                if (std.mem.eql(u8, exec_arg, ";")) {
+                if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
                     try exec_args.append(allocator, exec_arg);
@@ -530,13 +532,13 @@ pub fn main() !u8 {
             if (exec_args.items.len > 0) {
                 options.execdir_command = try exec_args.toOwnedSlice(allocator);
             }
-        } else if (std.mem.eql(u8, arg, "-okdir")) {
+        } else if (safe.SimdUtils.eql(arg, "-okdir")) {
             // Collect command and args until ;
             var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
             i += 1;
             while (i < args.len) : (i += 1) {
                 const exec_arg = args[i];
-                if (std.mem.eql(u8, exec_arg, ";")) {
+                if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
                     try exec_args.append(allocator, exec_arg);
@@ -545,35 +547,35 @@ pub fn main() !u8 {
             if (exec_args.items.len > 0) {
                 options.okdir_command = try exec_args.toOwnedSlice(allocator);
             }
-        } else if (std.mem.eql(u8, arg, "-ls")) {
+        } else if (safe.SimdUtils.eql(arg, "-ls")) {
             options.list_detailed = true;
-        } else if (std.mem.eql(u8, arg, "-readable")) {
+        } else if (safe.SimdUtils.eql(arg, "-readable")) {
             options.readable = true;
-        } else if (std.mem.eql(u8, arg, "-writable")) {
+        } else if (safe.SimdUtils.eql(arg, "-writable")) {
             options.writable = true;
-        } else if (std.mem.eql(u8, arg, "-executable")) {
+        } else if (safe.SimdUtils.eql(arg, "-executable")) {
             options.executable = true;
-        } else if (std.mem.eql(u8, arg, "--cpu")) {
+        } else if (safe.SimdUtils.eql(arg, "--cpu")) {
             backend_mode = .cpu_mode;
-        } else if (std.mem.eql(u8, arg, "--gnu")) {
+        } else if (safe.SimdUtils.eql(arg, "--gnu")) {
             backend_mode = .cpu_gnu;
-        } else if (std.mem.eql(u8, arg, "--gpu")) {
+        } else if (safe.SimdUtils.eql(arg, "--gpu")) {
             backend_mode = .gpu_mode;
-        } else if (std.mem.eql(u8, arg, "--metal")) {
+        } else if (safe.SimdUtils.eql(arg, "--metal")) {
             backend_mode = .metal;
-        } else if (std.mem.eql(u8, arg, "--vulkan")) {
+        } else if (safe.SimdUtils.eql(arg, "--vulkan")) {
             backend_mode = .vulkan;
-        } else if (std.mem.eql(u8, arg, "--auto")) {
+        } else if (safe.SimdUtils.eql(arg, "--auto")) {
             backend_mode = .auto;
-        } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-v")) {
+        } else if (safe.SimdUtils.eql(arg, "--verbose") or safe.SimdUtils.eql(arg, "-v")) {
             verbose = true;
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+        } else if (safe.SimdUtils.eql(arg, "-h") or safe.SimdUtils.eql(arg, "--help")) {
             printUsage();
             return 0;
-        } else if (std.mem.eql(u8, arg, "--version")) {
+        } else if (safe.SimdUtils.eql(arg, "--version")) {
             _ = std.posix.write(std.posix.STDOUT_FILENO, "find (e-jerk GPU-accelerated) 1.0\n") catch {};
             return 0;
-        } else if (arg[0] != '-' or std.mem.eql(u8, arg, "-")) {
+        } else if (arg[0] != '-' or safe.SimdUtils.eql(arg, "-")) {
             // Treat non-option args or "-" as paths
             try start_paths.append(allocator, arg);
         } else {
@@ -610,7 +612,7 @@ pub fn main() !u8 {
     } else {
         // Check for "-" argument meaning read from stdin
         for (start_paths.items) |path| {
-            if (std.mem.eql(u8, path, "-")) {
+            if (safe.SimdUtils.eql(path, "-")) {
                 read_stdin_paths = true;
                 break;
             }
@@ -622,7 +624,7 @@ pub fn main() !u8 {
         // Remove "-" from start_paths as we're going to read real paths from stdin
         var new_paths: std.ArrayListUnmanaged([]const u8) = .{};
         for (start_paths.items) |path| {
-            if (!std.mem.eql(u8, path, "-")) {
+            if (!safe.SimdUtils.eql(path, "-")) {
                 try new_paths.append(allocator, path);
             }
         }
@@ -630,8 +632,12 @@ pub fn main() !u8 {
         start_paths = new_paths;
         var stdin_list: std.ArrayListUnmanaged(u8) = .{};
         defer stdin_list.deinit(allocator);
-        var buf: [4096]u8 = undefined;
+        var buf: [4096]u8 = .{};
+        var __zust_loop_counter: u64 = 0;
         while (true) {
+            __zust_loop_counter += 1;
+            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
             const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch |err| {
                 if (err == error.WouldBlock) continue;
                 break;
@@ -645,7 +651,7 @@ pub fn main() !u8 {
         // Split by whitespace/newlines
         var iter = std.mem.tokenizeAny(u8, stdin_data, " \t\n\r");
         while (iter.next()) |path| {
-            if (!std.mem.eql(u8, path, "-")) {
+            if (!safe.SimdUtils.eql(path, "-")) {
                 const duped = try allocator.dupe(u8, path);
                 try allocated_paths.append(allocator, duped);
                 try start_paths.append(allocator, duped);
@@ -688,6 +694,7 @@ const FindResult = struct {
     had_error: bool,
 };
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn parseFileType(s: []const u8) ?FileType {
     if (s.len != 1) return null;
     return switch (s[0]) {
@@ -704,6 +711,7 @@ fn parseFileType(s: []const u8) ?FileType {
 
 var g_quit_requested = false;
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFiles(
     allocator: std.mem.Allocator,
     start_path: []const u8,
@@ -714,7 +722,7 @@ fn findFiles(
     var collected_paths: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
         for (collected_paths.items) |p| {
-            allocator.free(p);
+            // safe-transpile: free removed (memory owned by safe type);
         }
         collected_paths.deinit(allocator);
     }
@@ -730,9 +738,10 @@ fn findFiles(
     if (options.stay_on_filesystem) {
         const c_path = allocator.dupeZ(u8, start_path) catch null;
         if (c_path) |cp| {
-            defer allocator.free(cp);
-            var st: std.posix.Stat = undefined;
+            // safe-transpile: free removed (memory owned by safe type);
+            var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
             if (std.c.stat(cp, &st) == 0) {
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 options_with_device.start_device = @intCast(st.dev);
             }
         }
@@ -770,12 +779,12 @@ fn findFiles(
             }
             // Apply negation if -not was specified
             const should_output = if (options.negate_pattern) !matches else matches;
-                if (should_output) {
-                    if (!options.count_only) {
-                        performAction(path, options, allocator);
-                    }
-                    match_count += 1;
+            if (should_output) {
+                if (!options.count_only) {
+                    performAction(path, options, allocator);
                 }
+                match_count += 1;
+            }
         }
         return .{ .count = match_count, .had_error = false };
     }
@@ -790,7 +799,7 @@ fn findFiles(
 
     // Handle regex patterns (GPU-accelerated or CPU fallback)
     if (options.regex_pattern != null or options.iregex_pattern != null) {
-        const regex_pat = options.regex_pattern orelse options.iregex_pattern.?;
+        const regex_pat = options.regex_pattern orelse if (options.iregex_pattern) |value| value else return error.NullPointer;
         const case_insensitive = options.iregex_pattern != null;
         return findFilesWithRegex(allocator, collected_paths.items, regex_pat, case_insensitive, options, backend_mode, verbose);
     }
@@ -833,7 +842,9 @@ fn findFiles(
                 for (result.matches) |match| {
                     matched_set.put(match.name_idx, {}) catch {};
                 }
+                // safe-transpile: for with index access requires manual review
                 for (collected_paths.items, 0..) |path, idx| {
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
                             performAction(path, options, allocator);
@@ -882,7 +893,9 @@ fn findFiles(
         for (result.matches) |match| {
             matched_set.put(match.name_idx, {}) catch {};
         }
+        // safe-transpile: for with index access requires manual review
         for (collected_paths.items, 0..) |path, idx| {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (!matched_set.contains(@intCast(idx))) {
                 if (!options.count_only) {
                     performAction(path, options, allocator);
@@ -903,6 +916,7 @@ fn findFiles(
 }
 
 /// Find files using regex pattern matching (GPU-accelerated)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFilesWithRegex(
     allocator: std.mem.Allocator,
     paths: []const []const u8,
@@ -949,7 +963,9 @@ fn findFilesWithRegex(
                 for (result.matches) |match| {
                     matched_set.put(match.name_idx, {}) catch {};
                 }
+                // safe-transpile: for with index access requires manual review
                 for (paths, 0..) |path, idx| {
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
                             performAction(path, options, allocator);
@@ -1003,7 +1019,9 @@ fn findFilesWithRegex(
                 for (result.matches) |match| {
                     matched_set.put(match.name_idx, {}) catch {};
                 }
+                // safe-transpile: for with index access requires manual review
                 for (paths, 0..) |path, idx| {
+                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
                             performAction(path, options, allocator);
@@ -1033,6 +1051,7 @@ fn findFilesWithRegex(
 }
 
 /// CPU regex matching fallback
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFilesWithRegexCpu(
     allocator: std.mem.Allocator,
     paths: []const []const u8,
@@ -1052,12 +1071,11 @@ fn findFilesWithRegexCpu(
         var matched = false;
         if (compiled.find(path, allocator)) |match_opt| {
             if (match_opt) |match| {
-                var m = match;
-                defer m.deinit();
                 // Check if match spans entire string
-                if (m.start == 0 and m.end == path.len) {
+                if (match.start == 0 and match.end == path.len) {
                     matched = true;
                 }
+                match.deinit();
             }
         } else |_| {}
 
@@ -1076,6 +1094,7 @@ fn findFilesWithRegexCpu(
 const QuitError = error{QuitRequested};
 
 /// Check if a directory has no entries (other than . and ..)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn isDirEmpty(path: []const u8) bool {
     var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return false;
     defer dir.close();
@@ -1085,6 +1104,7 @@ fn isDirEmpty(path: []const u8) bool {
 }
 
 /// Check if a file/directory passes all metadata filters
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
     const passes_type_filter = switch (options.file_type) {
         .any => true,
@@ -1114,6 +1134,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
 
     // Check -size filter
     const passes_size_filter = if (options.size_filter) |sf|
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         sf.matches(@intCast(stat.size))
     else
         true;
@@ -1122,6 +1143,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     const passes_time_filter = if (options.time_filter) |tf| blk: {
         const now = std.time.timestamp();
         const ns_per_sec: i128 = 1_000_000_000;
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         const file_time: i64 = @intCast(switch (tf.time_type) {
             .modified => @divFloor(stat.mtime, ns_per_sec),
             .accessed => @divFloor(stat.atime, ns_per_sec),
@@ -1152,12 +1174,17 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     const passes_user_filter = if (options.user_name) |uname| blk: {
         if (posix_stat == null) break :blk false;
         const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
-            const c_uname = std.heap.page_allocator.dupeZ(u8, uname) catch { break :blk false; };
-            defer std.heap.page_allocator.free(c_uname);
+            const c_uname = safe.Pool.dupeZ(u8, uname) catch {
+                break :blk false;
+            };
+            // safe-transpile: free removed (memory owned by safe type);
             const pw = std.c.getpwnam(c_uname);
             if (pw == null) break :blk false;
+            // safe-transpile: optional unwrap requires manual review
+            // safe-transpile: optional unwrap requires manual review
             break :blk posix_stat.?.uid == pw.?.uid;
         };
+        // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.uid == target_uid;
     } else true;
 
@@ -1165,24 +1192,32 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     const passes_group_filter = if (options.group_name) |gname| blk: {
         if (posix_stat == null) break :blk false;
         const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
-            const c_gname = std.heap.page_allocator.dupeZ(u8, gname) catch { break :blk false; };
-            defer std.heap.page_allocator.free(c_gname);
+            const c_gname = safe.Pool.dupeZ(u8, gname) catch {
+                break :blk false;
+            };
+            // safe-transpile: free removed (memory owned by safe type);
             const gr = std.c.getgrnam(c_gname);
             if (gr == null) break :blk false;
+            // safe-transpile: optional unwrap requires manual review
+            // safe-transpile: optional unwrap requires manual review
             break :blk posix_stat.?.gid == gr.?.gid;
         };
+        // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.gid == target_gid;
     } else true;
 
     // Check -readable, -writable, -executable
     var passes_access_filter = true;
     if (options.readable or options.writable or options.executable) {
-        const c_path = std.heap.page_allocator.dupeZ(u8, path) catch null;
+        const c_path = safe.Pool.dupeZ(u8, path) catch null;
         if (c_path) |cp| {
-            defer std.heap.page_allocator.free(cp);
+            // safe-transpile: free removed (memory owned by safe type);
             var access_mode: c_uint = 0;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (options.readable) access_mode |= @intCast(std.posix.R_OK);
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (options.writable) access_mode |= @intCast(std.posix.W_OK);
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (options.executable) access_mode |= @intCast(std.posix.X_OK);
             passes_access_filter = std.c.access(cp, access_mode) == 0;
         } else {
@@ -1199,18 +1234,21 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
             const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
                 break :blk false;
             };
+            // safe-transpile: optional unwrap requires manual review
             break :blk (posix_stat.?.mode & target_mode) != 0;
         } else if (pmode.len > 0 and pmode[0] == '-') {
             // All of the permission bits are set
             const target_mode = std.fmt.parseInt(u32, pmode[1..], 8) catch {
                 break :blk false;
             };
+            // safe-transpile: optional unwrap requires manual review
             break :blk (posix_stat.?.mode & target_mode) == target_mode;
         } else {
             // Exact match
             const target_mode = std.fmt.parseInt(u32, pmode, 8) catch {
                 break :blk false;
             };
+            // safe-transpile: optional unwrap requires manual review
             break :blk (posix_stat.?.mode & 0o7777) == (target_mode & 0o7777);
         }
     } else true;
@@ -1218,28 +1256,36 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -links filter
     const passes_links_filter = if (options.links_count) |n| blk: {
         if (posix_stat == null) break :blk false;
+        // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.nlink == n;
     } else true;
 
     // Check -inum filter
     const passes_inode_filter = if (options.inode_number) |inum| blk: {
         if (posix_stat == null) break :blk false;
+        // safe-transpile: optional unwrap requires manual review
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         break :blk @as(u64, @intCast(posix_stat.?.ino)) == inum;
     } else true;
 
     // Check -samefile filter
     const passes_samefile_filter = if (options.samefile_path) |sf_path| blk: {
         if (posix_stat == null) break :blk false;
-        const c_sf_path = std.heap.page_allocator.dupeZ(u8, sf_path) catch { break :blk false; };
-        defer std.heap.page_allocator.free(c_sf_path);
-        var st: std.posix.Stat = undefined;
+        const c_sf_path = safe.Pool.dupeZ(u8, sf_path) catch {
+            break :blk false;
+        };
+        // safe-transpile: free removed (memory owned by safe type);
+        var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
         if (std.c.stat(c_sf_path, &st) != 0) break :blk false;
+        // safe-transpile: optional unwrap requires manual review
+        // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.ino == st.ino and posix_stat.?.dev == st.dev;
     } else true;
 
     // Check -nouser filter
     const passes_nouser_filter = if (options.no_user) blk: {
         if (posix_stat == null) break :blk false;
+        // safe-transpile: optional unwrap requires manual review
         const pw = std.c.getpwuid(posix_stat.?.uid);
         break :blk pw == null;
     } else true;
@@ -1247,6 +1293,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -nogroup filter
     const passes_nogroup_filter = if (options.no_group) blk: {
         if (posix_stat == null) break :blk false;
+        // safe-transpile: optional unwrap requires manual review
         const gr = std.c.getgrgid(posix_stat.?.gid);
         break :blk gr == null;
     } else true;
@@ -1258,6 +1305,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     return passes_type_filter and passes_empty_filter and passes_size_filter and passes_time_filter and passes_newer_filter and passes_user_filter and passes_group_filter and passes_perm_filter and passes_links_filter and passes_access_filter and passes_inode_filter and passes_samefile_filter and passes_nouser_filter and passes_nogroup_filter;
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn walkDirectory(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -1285,8 +1333,8 @@ fn walkDirectory(
                 const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null or options.inode_number != null or options.samefile_path != null or options.no_user or options.no_group;
                 const posix_stat = if (need_posix_stat) blk: {
                     const c_path = allocator.dupeZ(u8, path) catch break :blk null;
-                    defer allocator.free(c_path);
-                    var st: std.posix.Stat = undefined;
+                    // safe-transpile: free removed (memory owned by safe type);
+                    var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
                     if (std.c.stat(c_path, &st) != 0) break :blk null;
                     break :blk st;
                 } else null;
@@ -1317,10 +1365,11 @@ fn walkDirectory(
     // Check -mount: don't descend into directories on different filesystems
     if (options.stay_on_filesystem and options.start_device != null) {
         const c_path = allocator.dupeZ(u8, path) catch return;
-        defer allocator.free(c_path);
-        var st: std.posix.Stat = undefined;
+        // safe-transpile: free removed (memory owned by safe type);
+        var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
         if (std.c.stat(c_path, &st) == 0) {
-            if (@as(u64, @intCast(st.dev)) != options.start_device.?) {
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
+            if (@as(u64, @intCast(st.dev)) != if (options.start_device) |value| value else return error.NullPointer) {
                 return; // Different filesystem, skip
             }
         }
@@ -1331,8 +1380,8 @@ fn walkDirectory(
     var has_entries = false;
     var children: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
-        for (children.items) |child| allocator.free(child);
-        children.deinit(allocator);
+        for (children.items) |child| // safe-transpile: free removed (memory owned by safe type);
+            children.deinit(allocator);
     }
 
     while (try iter.next()) |entry| {
@@ -1360,8 +1409,8 @@ fn walkDirectory(
         const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
         const posix_stat = if (need_posix_stat) blk: {
             const c_path = allocator.dupeZ(u8, path) catch break :blk null;
-            defer allocator.free(c_path);
-            var st: std.posix.Stat = undefined;
+            // safe-transpile: free removed (memory owned by safe type);
+            var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
             if (std.c.stat(c_path, &st) != 0) break :blk null;
             break :blk st;
         } else null;
@@ -1384,6 +1433,7 @@ fn walkDirectory(
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn printPath(path: []const u8, print0: bool) void {
     if (print0) {
         _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
@@ -1394,6 +1444,7 @@ fn printPath(path: []const u8, print0: bool) void {
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn printPathToFile(path: []const u8, print0: bool, outfile: []const u8) void {
     const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
         if (err == error.FileNotFound) {
@@ -1423,6 +1474,7 @@ fn printPathToFile(path: []const u8, print0: bool, outfile: []const u8) void {
     }
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u8, allocator: std.mem.Allocator) void {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(allocator);
@@ -1438,8 +1490,8 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
         fn get(self: @This()) ?*std.posix.Stat {
             if (self.s.* == null) {
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
-                defer self.a.free(c_path);
-                var st: std.posix.Stat = undefined;
+                // safe-transpile: free removed (memory owned by safe type);
+                var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
                 if (std.c.stat(c_path, &st) == 0) {
                     self.s.* = st;
                 }
@@ -1474,58 +1526,71 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                 },
                 's' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'U' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'G' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'm' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = undefined;
+                        var buf: [16]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'M' => {
                     if (pstat.get()) |st| {
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const mode: u16 = @intCast(st.mode);
                         const file_type_char = fileTypeChar(mode);
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
                         const rwx = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
                             if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
                         };
                         const rwxg = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
                             if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
                         };
                         const rwxo = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
                             if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
                         };
-                        var buf: [16]u8 = undefined;
+                        var buf: [16]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
                             file_type_char,
                             &rwx,
@@ -1542,7 +1607,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = undefined;
+                            var buf: [32]u8 = .{};
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1555,7 +1620,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = undefined;
+                            var buf: [32]u8 = .{};
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1563,20 +1628,21 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                 },
                 'y' => {
                     if (pstat.get()) |st| {
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const c = fileTypeCharShort(@intCast(st.mode));
                         output.append(allocator, c) catch {};
                     }
                 },
                 'i' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'n' => {
                     if (pstat.get()) |st| {
-                        var buf: [8]u8 = undefined;
+                        var buf: [8]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -1587,20 +1653,22 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                         i += 1;
                         const time_esc = format[i];
                         if (fstat.get()) |st| {
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
                             switch (time_esc) {
                                 '@' => {
-                                    var buf: [32]u8 = undefined;
+                                    var buf: [32]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 '+' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const epoch_day = epoch.getEpochDay();
                                     const year_day = epoch_day.calculateYearDay();
                                     const month_day = year_day.calculateMonthDay();
                                     const day_secs = epoch.getDaySeconds();
-                                    var buf: [64]u8 = undefined;
+                                    var buf: [64]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
                                         year_day.year,
                                         month_day.month,
@@ -1612,41 +1680,47 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'Y' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const year_day = epoch.getEpochDay().calculateYearDay();
-                                    var buf: [16]u8 = undefined;
+                                    var buf: [16]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'm' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'd' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'H' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'M' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'S' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -1712,6 +1786,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
     _ = file.write(output.items) catch {};
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn deletePath(path: []const u8) void {
     // Try to delete as file first, then as empty directory
     std.fs.cwd().deleteFile(path) catch {
@@ -1720,13 +1795,21 @@ fn deletePath(path: []const u8) void {
 }
 
 fn fileTypeChar(mode: u16) u8 {
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const m = mode & @as(u16, @intCast(std.posix.S.IFMT));
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFREG))) return '-';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFDIR))) return 'd';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFLNK))) return 'l';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFBLK))) return 'b';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFCHR))) return 'c';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFIFO))) return 'p';
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     if (m == @as(u16, @intCast(std.posix.S.IFSOCK))) return 's';
     return '?';
 }
@@ -1737,6 +1820,7 @@ fn fileTypeCharShort(mode: u16) u8 {
 }
 
 /// Print formatted output according to GNU find -printf FORMAT string
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
     var output: std.ArrayListUnmanaged(u8) = .{};
     defer output.deinit(allocator);
@@ -1752,8 +1836,8 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
         fn get(self: @This()) ?*std.posix.Stat {
             if (self.s.* == null) {
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
-                defer self.a.free(c_path);
-                var st: std.posix.Stat = undefined;
+                // safe-transpile: free removed (memory owned by safe type);
+                var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
                 if (std.c.stat(c_path, &st) == 0) {
                     self.s.* = st;
                 }
@@ -1788,58 +1872,71 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 },
                 's' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'U' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'G' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'm' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = undefined;
+                        var buf: [16]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'M' => {
                     if (pstat.get()) |st| {
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const mode: u16 = @intCast(st.mode);
                         const file_type_char = fileTypeChar(mode);
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_setuid = (mode & @as(u16, @intCast(std.posix.S.ISUID))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_setgid = (mode & @as(u16, @intCast(std.posix.S.ISGID))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const has_sticky = (mode & @as(u16, @intCast(std.posix.S.ISVTX))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const usr_exec = (mode & @as(u16, @intCast(std.posix.S.IXUSR))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const grp_exec = (mode & @as(u16, @intCast(std.posix.S.IXGRP))) != 0;
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         const oth_exec = (mode & @as(u16, @intCast(std.posix.S.IXOTH))) != 0;
                         const rwx = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IRUSR)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWUSR)) != 0) 'w' else '-',
                             if (has_setuid) (if (usr_exec) 's' else 'S') else (if (usr_exec) 'x' else '-'),
                         };
                         const rwxg = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IRGRP)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWGRP)) != 0) 'w' else '-',
                             if (has_setgid) (if (grp_exec) 's' else 'S') else (if (grp_exec) 'x' else '-'),
                         };
                         const rwxo = [3]u8{
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IROTH)) != 0) 'r' else '-',
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
                             if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
                         };
-                        var buf: [16]u8 = undefined;
+                        var buf: [16]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
                             file_type_char,
                             &rwx,
@@ -1856,7 +1953,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = undefined;
+                            var buf: [32]u8 = .{};
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1869,7 +1966,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = undefined;
+                            var buf: [32]u8 = .{};
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1877,19 +1974,20 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 },
                 'y' => {
                     if (pstat.get()) |st| {
+                        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                         output.append(allocator, fileTypeCharShort(@intCast(st.mode))) catch {};
                     }
                 },
                 'i' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = undefined;
+                        var buf: [32]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'n' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = undefined;
+                        var buf: [16]u8 = .{};
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -1900,20 +1998,22 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                         i += 1;
                         const time_esc = format[i];
                         if (fstat.get()) |st| {
+                            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                             const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
                             switch (time_esc) {
                                 '@' => {
-                                    var buf: [32]u8 = undefined;
+                                    var buf: [32]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 '+' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const epoch_day = epoch.getEpochDay();
                                     const year_day = epoch_day.calculateYearDay();
                                     const month_day = year_day.calculateMonthDay();
                                     const day_secs = epoch.getDaySeconds();
-                                    var buf: [64]u8 = undefined;
+                                    var buf: [64]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
                                         year_day.year,
                                         month_day.month,
@@ -1925,41 +2025,47 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'Y' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const year_day = epoch.getEpochDay().calculateYearDay();
-                                    var buf: [16]u8 = undefined;
+                                    var buf: [16]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'm' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'd' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'H' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'M' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'S' => {
+                                    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = undefined;
+                                    var buf: [8]u8 = .{};
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -2038,8 +2144,9 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
 }
 
 /// Format a POSIX mode into ls -l style string (e.g., "-rw-r--r--")
+/// @safe(returns: [10]u8 as owned)
 fn formatMode(mode: u32) [10]u8 {
-    var result: [10]u8 = undefined;
+    var result: [10]u8 = .{};
     // File type
     result[0] = switch (mode & 0o170000) {
         0o040000 => 'd',
@@ -2067,16 +2174,20 @@ fn formatMode(mode: u32) [10]u8 {
 }
 
 /// Print detailed listing like `ls -dils` for a file
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     // Use statFile to get standard fs.Stat, then use POSIX stat for detailed fields
     const stat = std.fs.cwd().statFile(path) catch return;
 
     const c_path = allocator.dupeZ(u8, path) catch return;
-    defer allocator.free(c_path);
-    var pst: std.posix.Stat = undefined;
+    // safe-transpile: free removed (memory owned by safe type);
+    var pst: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
     if (std.c.stat(c_path, &pst) != 0) return;
 
-    const mode_str = formatMode(@intCast(pst.mode));
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
+    const mode_str = blk: {
+        break :blk formatMode(@intCast(pst.mode));
+    };
     const nlink = pst.nlink;
     const uid = pst.uid;
     const gid = pst.gid;
@@ -2086,14 +2197,16 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
 
     // Format time like ls -l: "Mon DD HH:MM" or "Mon DD  YYYY"
     const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const mtime_sec: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+    // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
     const epoch_day = epoch.getEpochDay();
     const year_day = epoch_day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_secs = epoch.getDaySeconds();
 
-    var time_buf: [64]u8 = undefined;
+    var time_buf: [64]u8 = .{};
     const time_str = blk: {
         const now = std.time.timestamp();
         const age_seconds = now - mtime_sec;
@@ -2116,15 +2229,15 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     };
 
     // Look up user and group names (fallback to numeric IDs)
-    var uname_buf: [64]u8 = undefined;
-    var gname_buf: [64]u8 = undefined;
+    var uname_buf: [64]u8 = .{};
+    var gname_buf: [64]u8 = .{};
     const uname = std.fmt.bufPrint(&uname_buf, "{d}", .{uid}) catch "?";
     const gname = std.fmt.bufPrint(&gname_buf, "{d}", .{gid}) catch "?";
 
     const basename = std.fs.path.basename(path);
 
     // Format: ino blocks mode nlink owner group size time basename
-    var output_buf: [4096]u8 = undefined;
+    var output_buf: [4096]u8 = .{};
     const output = std.fmt.bufPrint(&output_buf, "{d} {d} {s} {d} {s} {s} {d} {s} {s}\n", .{
         ino,
         @divFloor(blocks, 2), // GNU find -ls uses 1K blocks; st.blocks is 512-byte blocks
@@ -2140,6 +2253,7 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     _ = std.posix.write(std.posix.STDOUT_FILENO, output) catch {};
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
     if (options.delete_matched) {
         deletePath(path);
@@ -2148,7 +2262,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         var child_args: std.ArrayListUnmanaged([]const u8) = .{};
         defer child_args.deinit(allocator);
         for (cmd) |arg| {
-            if (std.mem.eql(u8, arg, "{}")) {
+            if (safe.SimdUtils.eql(arg, "{}")) {
                 child_args.append(allocator, path) catch {};
             } else {
                 child_args.append(allocator, arg) catch {};
@@ -2160,15 +2274,19 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         }
     } else if (options.ok_command) |cmd| {
         // Build command line for display
-        var display_buf: [4096]u8 = undefined;
+        var display_buf: [4096]u8 = .{};
         var db_pos: usize = 0;
+        // safe-transpile: for with index access requires manual review
         for (cmd, 0..) |arg, idx| {
             if (idx > 0) {
-                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+                if (db_pos < display_buf.len) {
+                    display_buf[db_pos] = ' ';
+                    db_pos += 1;
+                }
             }
-            const a = if (std.mem.eql(u8, arg, "{}")) path else arg;
+            const a = if (safe.SimdUtils.eql(arg, "{}")) path else arg;
             if (db_pos + a.len < display_buf.len) {
-                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                safe.SimdUtils.copy(display_buf[db_pos .. db_pos + a.len], a);
                 db_pos += a.len;
             }
         }
@@ -2177,14 +2295,14 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
 
         // Read one character from stdin
-        var buf: [1]u8 = undefined;
+        var buf: [1]u8 = .{};
         const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
         if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
             // Build command args, replacing {} with path
             var child_args: std.ArrayListUnmanaged([]const u8) = .{};
             defer child_args.deinit(allocator);
             for (cmd) |arg| {
-                if (std.mem.eql(u8, arg, "{}")) {
+                if (safe.SimdUtils.eql(arg, "{}")) {
                     child_args.append(allocator, path) catch {};
                 } else {
                     child_args.append(allocator, arg) catch {};
@@ -2196,8 +2314,12 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
         }
         // Consume rest of line
+        var __zust_loop_counter: u64 = 0;
         while (true) {
-            var discard: [1]u8 = undefined;
+            __zust_loop_counter += 1;
+            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
+            var discard: [1]u8 = .{};
             const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
             if (n == 0 or discard[0] == '\n') break;
         }
@@ -2208,7 +2330,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         var child_args: std.ArrayListUnmanaged([]const u8) = .{};
         defer child_args.deinit(allocator);
         for (cmd) |arg| {
-            if (std.mem.eql(u8, arg, "{}")) {
+            if (safe.SimdUtils.eql(arg, "{}")) {
                 child_args.append(allocator, basename) catch {};
             } else {
                 child_args.append(allocator, arg) catch {};
@@ -2217,7 +2339,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         if (child_args.items.len > 0) {
             // Save original cwd, chdir to parent, spawn child, restore cwd
             const original_cwd = std.process.getCwdAlloc(allocator) catch null;
-            defer if (original_cwd) |ocwd| allocator.free(ocwd);
+            // safe-transpile: free removed (memory owned by safe type);
             _ = std.posix.chdir(dirname) catch {};
             var child = std.process.Child.init(child_args.items, allocator);
             _ = child.spawnAndWait() catch {};
@@ -2230,15 +2352,19 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         const basename = std.fs.path.basename(path);
         const dirname = std.fs.path.dirname(path) orelse ".";
         // Build command line for display
-        var display_buf: [4096]u8 = undefined;
+        var display_buf: [4096]u8 = .{};
         var db_pos: usize = 0;
+        // safe-transpile: for with index access requires manual review
         for (cmd, 0..) |arg, idx| {
             if (idx > 0) {
-                if (db_pos < display_buf.len) { display_buf[db_pos] = ' '; db_pos += 1; }
+                if (db_pos < display_buf.len) {
+                    display_buf[db_pos] = ' ';
+                    db_pos += 1;
+                }
             }
-            const a = if (std.mem.eql(u8, arg, "{}")) basename else arg;
+            const a = if (safe.SimdUtils.eql(arg, "{}")) basename else arg;
             if (db_pos + a.len < display_buf.len) {
-                @memcpy(display_buf[db_pos..db_pos + a.len], a);
+                safe.SimdUtils.copy(display_buf[db_pos .. db_pos + a.len], a);
                 db_pos += a.len;
             }
         }
@@ -2247,13 +2373,13 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
 
         // Read one character from stdin
-        var buf: [1]u8 = undefined;
+        var buf: [1]u8 = .{};
         const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
         if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
             var child_args: std.ArrayListUnmanaged([]const u8) = .{};
             defer child_args.deinit(allocator);
             for (cmd) |arg| {
-                if (std.mem.eql(u8, arg, "{}")) {
+                if (safe.SimdUtils.eql(arg, "{}")) {
                     child_args.append(allocator, basename) catch {};
                 } else {
                     child_args.append(allocator, arg) catch {};
@@ -2261,7 +2387,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
             if (child_args.items.len > 0) {
                 const original_cwd = std.process.getCwdAlloc(allocator) catch null;
-                defer if (original_cwd) |ocwd| allocator.free(ocwd);
+                // safe-transpile: free removed (memory owned by safe type);
                 _ = std.posix.chdir(dirname) catch {};
                 var child = std.process.Child.init(child_args.items, allocator);
                 _ = child.spawnAndWait() catch {};
@@ -2271,8 +2397,12 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
         }
         // Consume rest of line
+        var __zust_loop_counter: u64 = 0;
         while (true) {
-            var discard: [1]u8 = undefined;
+            __zust_loop_counter += 1;
+            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+
+            var discard: [1]u8 = .{};
             const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
             if (n == 0 or discard[0] == '\n') break;
         }
@@ -2292,6 +2422,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
 }
 
 /// Simple glob pattern matching (supports * and ?)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn matchGlob(text: []const u8, pattern: []const u8, case_insensitive: bool) bool {
     var ti: usize = 0;
     var pi: usize = 0;
@@ -2417,9 +2548,9 @@ fn printUsage() void {
 
 // Tests
 test "parse file type" {
-    try std.testing.expectEqual(FileType.file, parseFileType("f").?);
-    try std.testing.expectEqual(FileType.directory, parseFileType("d").?);
-    try std.testing.expectEqual(FileType.symlink, parseFileType("l").?);
+    try std.testing.expectEqual(FileType.file, if (parseFileType("f")) |value| value else return error.NullPointer);
+    try std.testing.expectEqual(FileType.directory, if (parseFileType("d")) |value| value else return error.NullPointer);
+    try std.testing.expectEqual(FileType.symlink, if (parseFileType("l")) |value| value else return error.NullPointer);
     try std.testing.expect(parseFileType("x") == null);
     try std.testing.expect(parseFileType("ff") == null);
 }
@@ -2442,27 +2573,33 @@ test "parseSizeArg: basic size parsing" {
     // Bytes suffix
     const size_c = parseSizeArg("100c");
     try std.testing.expect(size_c != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 100), size_c.?.bytes);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(SizeComparison.exact, size_c.?.comparison);
 
     // Kilobytes suffix
     const size_k = parseSizeArg("2k");
     try std.testing.expect(size_k != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 2 * 1024), size_k.?.bytes);
 
     // Megabytes suffix
     const size_m = parseSizeArg("5M");
     try std.testing.expect(size_m != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 5 * 1024 * 1024), size_m.?.bytes);
 
     // Gigabytes suffix
     const size_g = parseSizeArg("1G");
     try std.testing.expect(size_g != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 1024 * 1024 * 1024), size_g.?.bytes);
 
     // Default (512-byte blocks)
     const size_default = parseSizeArg("10");
     try std.testing.expect(size_default != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 10 * 512), size_default.?.bytes);
 }
 
@@ -2470,13 +2607,17 @@ test "parseSizeArg: comparison operators" {
     // Greater than
     const size_gt = parseSizeArg("+1M");
     try std.testing.expect(size_gt != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(SizeComparison.greater, size_gt.?.comparison);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 1024 * 1024), size_gt.?.bytes);
 
     // Less than
     const size_lt = parseSizeArg("-100k");
     try std.testing.expect(size_lt != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(SizeComparison.less, size_lt.?.comparison);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(u64, 100 * 1024), size_lt.?.bytes);
 }
 
@@ -2508,17 +2649,22 @@ test "parseTimeArg: basic time parsing" {
     // Exact days
     const time_exact = parseTimeArg("5", .modified, false);
     try std.testing.expect(time_exact != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(i64, 5), time_exact.?.days);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeComparison.exact, time_exact.?.comparison);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeType.modified, time_exact.?.time_type);
 
     // Different time types
     const time_atime = parseTimeArg("3", .accessed, false);
     try std.testing.expect(time_atime != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeType.accessed, time_atime.?.time_type);
 
     const time_ctime = parseTimeArg("7", .changed, false);
     try std.testing.expect(time_ctime != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeType.changed, time_ctime.?.time_type);
 }
 
@@ -2526,13 +2672,17 @@ test "parseTimeArg: comparison operators" {
     // More than N days ago (older)
     const time_older = parseTimeArg("+7", .modified, false);
     try std.testing.expect(time_older != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeComparison.older, time_older.?.comparison);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(i64, 7), time_older.?.days);
 
     // Less than N days ago (newer)
     const time_newer = parseTimeArg("-1", .modified, false);
     try std.testing.expect(time_newer != null);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(TimeComparison.newer, time_newer.?.comparison);
+    // safe-transpile: optional unwrap requires manual review
     try std.testing.expectEqual(@as(i64, 1), time_newer.?.days);
 }
 

@@ -13,6 +13,7 @@ const SLASH_VEC32: Vec32 = @splat('/');
 
 /// CPU-based glob pattern matching with SIMD optimization
 /// Implements fnmatch-like behavior for -name/-iname/-path/-ipath
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn matchNames(
     names: []const []const u8,
     pattern: []const u8,
@@ -23,12 +24,13 @@ pub fn matchNames(
     errdefer matches.deinit(allocator);
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = undefined;
+    var lower_pattern_buf: [1024]u8 = .{};
     const search_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];
     } else pattern;
 
+    // safe-transpile: for with index access requires manual review
     for (names, 0..) |name, i| {
         const match_str = if (options.match_path)
             name
@@ -37,6 +39,7 @@ pub fn matchNames(
 
         if (globMatchSIMD(search_pattern, match_str, options)) {
             try matches.append(allocator, .{
+                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 .name_idx = @intCast(i),
                 .matched = 1,
             });
@@ -52,6 +55,8 @@ pub fn matchNames(
 }
 
 /// SIMD-optimized basename finder (find last '/')
+// safe-transpile: function uses raw slice parameter — consider safe.String
+// safe-transpile: function returns small constant slice — consider safe.String
 fn basenameSIMD(path: []const u8) []const u8 {
     if (path.len == 0) return path;
 
@@ -103,6 +108,7 @@ inline fn toLower(c: u8) u8 {
 }
 
 /// Convert slice to lowercase using SIMD
+// safe-transpile: function uses raw slice parameter — consider safe.String
 inline fn toLowerSlice(src: []const u8, dst: []u8) void {
     var i: usize = 0;
     // Process 16 bytes at a time
@@ -121,10 +127,12 @@ inline fn toLowerSlice(src: []const u8, dst: []u8) void {
 
 /// SIMD-optimized glob pattern matching (fnmatch-like)
 /// Supports: * (any sequence), ? (any single char), [abc] (char class), [a-z] (range)
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn globMatchSIMD(pattern: []const u8, name: []const u8, options: gpu.MatchOptions) bool {
     return globMatchImpl(pattern, name, options.case_insensitive, options.match_period, 0);
 }
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn globMatchImpl(pattern: []const u8, name: []const u8, case_insensitive: bool, match_period: bool, name_start: usize) bool {
     var pi: usize = 0; // pattern index
     var ni: usize = 0; // name index
@@ -221,6 +229,7 @@ const CharClassResult = struct {
     consumed: usize,
 };
 
+// safe-transpile: function uses raw slice parameter — consider safe.String
 fn matchCharClassSIMD(pattern: []const u8, char: u8, case_insensitive: bool) CharClassResult {
     if (pattern.len < 2 or pattern[0] != '[') {
         return .{ .matched = false, .consumed = 0 };

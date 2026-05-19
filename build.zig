@@ -41,6 +41,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Safe types module from zust
+    const safe_module = b.createModule(.{ .root_source_file = b.path("../zust/src/safe.zig") });
+
     // Vulkan dependencies
     const vulkan_headers = b.dependency("vulkan_headers", .{});
     const vulkan_dep = b.dependency("vulkan_zig", .{
@@ -105,7 +108,7 @@ pub fn build(b: *std.Build) void {
     metal_preprocess.addFileArg(shaders_common.path("metal/string_ops.h"));
     metal_preprocess.addFileArg(shaders_common.path("metal/regex_ops.h"));
     metal_preprocess.addFileArg(b.path("src/shaders/match.metal"));
-    const preprocessed_metal = metal_preprocess.captureStdOut();
+    const preprocessed_metal = metal_preprocess.captureStdOut(.{});
 
     // Create embedded Metal shader module
     const metal_module = b.addModule("metal_shader", .{
@@ -127,6 +130,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "metal_shader", .module = metal_module },
             .{ .name = "e_jerk_gpu", .module = e_jerk_gpu_module },
             .{ .name = "regex", .module = regex_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -135,6 +139,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/cpu_optimized.zig"),
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -145,6 +150,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "gpu", .module = gpu_module },
             .{ .name = "cpu_optimized", .module = cpu_module },
+            .{ .name = "safe", .module = safe_module },
         },
     });
 
@@ -163,27 +169,28 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     // Link libc for std.c functions (stat, getpwuid, getgrgid, access)
-    exe.linkLibC();
+    exe.root_module.link_libc = true;
 
     // Platform-specific linking based on enabled backends
     if (is_native) {
         if (enable_metal) {
-            exe.linkFramework("Foundation");
-            exe.linkFramework("Metal");
-            exe.linkFramework("QuartzCore");
+            exe.root_module.linkFramework("Foundation", .{});
+            exe.root_module.linkFramework("Metal", .{});
+            exe.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 // MoltenVK from Homebrew for Vulkan on macOS
                 exe.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                exe.linkSystemLibrary("MoltenVK");
+                exe.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                exe.linkSystemLibrary("vulkan");
+                exe.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -214,25 +221,26 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     // Link libc for tests
-    unit_tests.linkLibC();
+    unit_tests.root_module.link_libc = true;
 
     if (is_native) {
         if (enable_metal) {
-            unit_tests.linkFramework("Foundation");
-            unit_tests.linkFramework("Metal");
-            unit_tests.linkFramework("QuartzCore");
+            unit_tests.root_module.linkFramework("Foundation", .{});
+            unit_tests.root_module.linkFramework("Metal", .{});
+            unit_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 unit_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                unit_tests.linkSystemLibrary("MoltenVK");
+                unit_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                unit_tests.linkSystemLibrary("vulkan");
+                unit_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -251,25 +259,26 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     // Link libc for tests
-    extra_tests.linkLibC();
+    extra_tests.root_module.link_libc = true;
 
     if (is_native) {
         if (enable_metal) {
-            extra_tests.linkFramework("Foundation");
-            extra_tests.linkFramework("Metal");
-            extra_tests.linkFramework("QuartzCore");
+            extra_tests.root_module.linkFramework("Foundation", .{});
+            extra_tests.root_module.linkFramework("Metal", .{});
+            extra_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 extra_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                extra_tests.linkSystemLibrary("MoltenVK");
+                extra_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                extra_tests.linkSystemLibrary("vulkan");
+                extra_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }
@@ -312,25 +321,26 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "gpu", .module = gpu_module },
                 .{ .name = "cpu", .module = cpu_module },
                 .{ .name = "cpu_gnu", .module = cpu_gnu_module },
+                .{ .name = "safe", .module = safe_module },
             },
         }),
     });
 
     // Link libc for smoke tests
-    smoke_tests.linkLibC();
+    smoke_tests.root_module.link_libc = true;
 
     if (is_native) {
         if (enable_metal) {
-            smoke_tests.linkFramework("Foundation");
-            smoke_tests.linkFramework("Metal");
-            smoke_tests.linkFramework("QuartzCore");
+            smoke_tests.root_module.linkFramework("Foundation", .{});
+            smoke_tests.root_module.linkFramework("Metal", .{});
+            smoke_tests.root_module.linkFramework("QuartzCore", .{});
         }
         if (enable_vulkan) {
             if (is_macos) {
                 smoke_tests.root_module.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/molten-vk/lib" });
-                smoke_tests.linkSystemLibrary("MoltenVK");
+                smoke_tests.root_module.linkSystemLibrary("MoltenVK", .{});
             } else {
-                smoke_tests.linkSystemLibrary("vulkan");
+                smoke_tests.root_module.linkSystemLibrary("vulkan", .{});
             }
         }
     }

@@ -8,6 +8,7 @@ const cpu_optimized = @import("cpu_optimized");
 /// version for consistent benchmark comparisons.
 ///
 /// Both implementations follow POSIX fnmatch semantics with GNU extensions.
+// safe-transpile: function uses raw slice parameter — consider safe.String
 pub fn matchNames(
     names: []const []const u8,
     pattern: []const u8,

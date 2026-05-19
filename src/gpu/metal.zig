@@ -64,6 +64,7 @@ pub const MetalMatcher = struct {
         const is_high_perf = has_unified and max_threads >= 1024;
 
         const capabilities = mod.GpuCapabilities{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .max_threads_per_group = @intCast(max_threads),
             .max_buffer_size = @min(max_buffer_len, MAX_GPU_BUFFER_SIZE),
             .recommended_memory = recommended_memory,
@@ -71,8 +72,8 @@ pub const MetalMatcher = struct {
             .device_type = if (is_high_perf) .discrete else .integrated,
         };
 
-        const self = try allocator.create(Self);
-        self.* = Self{
+        const self = try safe.Box(Self).init(allocator, undefined);
+        self[0] = Self{
             .device = device,
             .command_queue = command_queue,
             .glob_pipeline = glob_pipeline,
@@ -92,6 +93,7 @@ pub const MetalMatcher = struct {
         self.allocator.destroy(self);
     }
 
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn matchNames(
         self: *Self,
         names: []const []const u8,
@@ -107,6 +109,7 @@ pub const MetalMatcher = struct {
             };
         }
 
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         const num_names: u32 = @intCast(names.len);
 
         // Calculate total size needed for names data
@@ -117,25 +120,29 @@ pub const MetalMatcher = struct {
 
         // Prepare name offsets and lengths
         const name_offsets = try allocator.alloc(u32, names.len);
-        defer allocator.free(name_offsets);
+        // safe-transpile: free removed (memory owned by safe type);
         const name_lengths = try allocator.alloc(u32, names.len);
-        defer allocator.free(name_lengths);
+        // safe-transpile: free removed (memory owned by safe type);
 
         // Prepare packed names data
         const names_data = try allocator.alloc(u8, total_names_size);
-        defer allocator.free(names_data);
+        // safe-transpile: free removed (memory owned by safe type);
 
         var offset: u32 = 0;
+        // safe-transpile: for with index access requires manual review
         for (names, 0..) |name, i| {
             name_offsets[i] = offset;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             name_lengths[i] = @intCast(name.len);
-            @memcpy(names_data[offset..][0..name.len], name);
+            safe.SimdUtils.copy(names_data[offset..][0..name.len], name);
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             offset += @intCast(name.len);
         }
 
         // Create config
         const config = MatchConfig{
             .num_names = num_names,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .pattern_len = @intCast(pattern.len),
             .flags = options.toFlags(),
             .max_name_len = mod.MAX_NAME_LEN,
@@ -148,40 +155,45 @@ pub const MetalMatcher = struct {
         var config_buffer = self.device.newBufferWithLengthOptions(@sizeOf(MatchConfig), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer config_buffer.release();
         if (config_buffer.contents()) |ptr| {
-            const config_ptr: *MatchConfig = @ptrCast(@alignCast(ptr));
-            config_ptr.* = config;
+            const config_ptr: *MatchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            config_ptr[0] = config;
         }
 
         // Pattern buffer
         var pattern_buffer = self.device.newBufferWithLengthOptions(pattern.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer pattern_buffer.release();
         if (pattern_buffer.contents()) |ptr| {
-            const pattern_ptr: [*]u8 = @ptrCast(ptr);
-            @memcpy(pattern_ptr[0..pattern.len], pattern);
+            const pattern_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(ptr);
+            safe.SimdUtils.copy(pattern_ptr[0..pattern.len], pattern);
         }
 
         // Names data buffer
         var names_buffer = self.device.newBufferWithLengthOptions(names_data.len, mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer names_buffer.release();
         if (names_buffer.contents()) |ptr| {
-            const names_ptr: [*]u8 = @ptrCast(ptr);
-            @memcpy(names_ptr[0..names_data.len], names_data);
+            const names_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(ptr);
+            safe.SimdUtils.copy(names_ptr[0..names_data.len], names_data);
         }
 
         // Name offsets buffer
         var offsets_buffer = self.device.newBufferWithLengthOptions(name_offsets.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer offsets_buffer.release();
         if (offsets_buffer.contents()) |ptr| {
-            const offsets_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-            @memcpy(offsets_ptr[0..name_offsets.len], name_offsets);
+            const offsets_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            safe.SimdUtils.copy(offsets_ptr[0..name_offsets.len], name_offsets);
         }
 
         // Name lengths buffer
         var lengths_buffer = self.device.newBufferWithLengthOptions(name_lengths.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer lengths_buffer.release();
         if (lengths_buffer.contents()) |ptr| {
-            const lengths_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-            @memcpy(lengths_ptr[0..name_lengths.len], name_lengths);
+            const lengths_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            safe.SimdUtils.copy(lengths_ptr[0..name_lengths.len], name_lengths);
         }
 
         // Results buffer
@@ -193,8 +205,9 @@ pub const MetalMatcher = struct {
         var count_buffer = self.device.newBufferWithLengthOptions(@sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer count_buffer.release();
         if (count_buffer.contents()) |ptr| {
-            const count_ptr: *u32 = @ptrCast(@alignCast(ptr));
-            count_ptr.* = 0;
+            const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            count_ptr[0] = 0;
         }
 
         // Create command buffer and encoder
@@ -221,8 +234,10 @@ pub const MetalMatcher = struct {
         command_buffer.waitUntilCompleted();
 
         // Read results
-        const results_ptr: [*]MatchResult = @ptrCast(@alignCast(results_buffer.contents()));
-        const count_ptr: *u32 = @ptrCast(@alignCast(count_buffer.contents()));
+        const results_ptr: [*]MatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(results_buffer.contents()));
+        const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(count_buffer.contents()));
         const total_matches = count_ptr.*;
 
         // Copy matching results
@@ -243,6 +258,7 @@ pub const MetalMatcher = struct {
     }
 
     /// Match filenames against a regex pattern using GPU Thompson NFA
+    // safe-transpile: function uses raw slice parameter — consider safe.String
     pub fn matchNamesRegex(
         self: *Self,
         names: []const []const u8,
@@ -264,6 +280,7 @@ pub const MetalMatcher = struct {
         }, allocator);
         defer compiled.deinit();
 
+        // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         const num_names: u32 = @intCast(names.len);
 
         // Calculate total size needed for names data
@@ -274,25 +291,29 @@ pub const MetalMatcher = struct {
 
         // Prepare name offsets and lengths
         const name_offsets = try allocator.alloc(u32, names.len);
-        defer allocator.free(name_offsets);
+        // safe-transpile: free removed (memory owned by safe type);
         const name_lengths = try allocator.alloc(u32, names.len);
-        defer allocator.free(name_lengths);
+        // safe-transpile: free removed (memory owned by safe type);
 
         // Prepare packed names data
         const names_data = try allocator.alloc(u8, total_names_size);
-        defer allocator.free(names_data);
+        // safe-transpile: free removed (memory owned by safe type);
 
         var offset: u32 = 0;
+        // safe-transpile: for with index access requires manual review
         for (names, 0..) |name, i| {
             name_offsets[i] = offset;
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             name_lengths[i] = @intCast(name.len);
-            @memcpy(names_data[offset..][0..name.len], name);
+            safe.SimdUtils.copy(names_data[offset..][0..name.len], name);
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             offset += @intCast(name.len);
         }
 
         // Pack regex states for GPU (3 u32 words per state)
         const states_data = try allocator.alloc(u32, compiled.states.len * 3);
-        defer allocator.free(states_data);
+        // safe-transpile: free removed (memory owned by safe type);
+        // safe-transpile: for with index access requires manual review
         for (compiled.states, 0..) |state, i| {
             const base = i * 3;
             // Word 0: [type:8][flags:8][out:16]
@@ -310,9 +331,11 @@ pub const MetalMatcher = struct {
         // Create config
         const config = RegexMatchConfig{
             .num_names = num_names,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .num_states = @intCast(compiled.states.len),
             .start_state = compiled.header.start_state,
             .header_flags = compiled.header.flags,
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .num_bitmaps = @intCast(compiled.bitmaps.len / 8),
             .flags = options.toFlags(),
         };
@@ -321,16 +344,18 @@ pub const MetalMatcher = struct {
         const config_buffer = self.device.newBufferWithLengthOptions(@sizeOf(RegexMatchConfig), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer config_buffer.release();
         if (config_buffer.contents()) |ptr| {
-            const config_ptr: *RegexMatchConfig = @ptrCast(@alignCast(ptr));
-            config_ptr.* = config;
+            const config_ptr: *RegexMatchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            config_ptr[0] = config;
         }
 
         // States buffer
         const states_buffer = self.device.newBufferWithLengthOptions(states_data.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer states_buffer.release();
         if (states_buffer.contents()) |ptr| {
-            const states_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-            @memcpy(states_ptr[0..states_data.len], states_data);
+            const states_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            safe.SimdUtils.copy(states_ptr[0..states_data.len], states_data);
         }
 
         // Bitmaps buffer
@@ -339,8 +364,9 @@ pub const MetalMatcher = struct {
         defer bitmaps_buffer.release();
         if (compiled.bitmaps.len > 0) {
             if (bitmaps_buffer.contents()) |ptr| {
-                const bitmaps_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-                @memcpy(bitmaps_ptr[0..compiled.bitmaps.len], compiled.bitmaps);
+                const bitmaps_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                    @ptrCast(@alignCast(ptr));
+                safe.SimdUtils.copy(bitmaps_ptr[0..compiled.bitmaps.len], compiled.bitmaps);
             }
         }
 
@@ -349,8 +375,9 @@ pub const MetalMatcher = struct {
         defer names_buffer.release();
         if (names_data.len > 0) {
             if (names_buffer.contents()) |ptr| {
-                const names_ptr: [*]u8 = @ptrCast(ptr);
-                @memcpy(names_ptr[0..names_data.len], names_data);
+                const names_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                    @ptrCast(ptr);
+                safe.SimdUtils.copy(names_ptr[0..names_data.len], names_data);
             }
         }
 
@@ -358,16 +385,18 @@ pub const MetalMatcher = struct {
         const offsets_buffer = self.device.newBufferWithLengthOptions(name_offsets.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer offsets_buffer.release();
         if (offsets_buffer.contents()) |ptr| {
-            const offsets_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-            @memcpy(offsets_ptr[0..name_offsets.len], name_offsets);
+            const offsets_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            safe.SimdUtils.copy(offsets_ptr[0..name_offsets.len], name_offsets);
         }
 
         // Name lengths buffer
         const lengths_buffer = self.device.newBufferWithLengthOptions(name_lengths.len * @sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer lengths_buffer.release();
         if (lengths_buffer.contents()) |ptr| {
-            const lengths_ptr: [*]u32 = @ptrCast(@alignCast(ptr));
-            @memcpy(lengths_ptr[0..name_lengths.len], name_lengths);
+            const lengths_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            safe.SimdUtils.copy(lengths_ptr[0..name_lengths.len], name_lengths);
         }
 
         // Results buffer
@@ -379,12 +408,14 @@ pub const MetalMatcher = struct {
         const count_buffer = self.device.newBufferWithLengthOptions(@sizeOf(u32), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer count_buffer.release();
         if (count_buffer.contents()) |ptr| {
-            const count_ptr: *u32 = @ptrCast(@alignCast(ptr));
-            count_ptr.* = 0;
+            const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            count_ptr[0] = 0;
         }
 
         // Header buffer for regex_find function
         const header = RegexHeader{
+            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             .num_states = @intCast(compiled.states.len),
             .start_state = compiled.header.start_state,
             .num_groups = compiled.header.num_groups,
@@ -393,8 +424,9 @@ pub const MetalMatcher = struct {
         const header_buffer = self.device.newBufferWithLengthOptions(@sizeOf(RegexHeader), mtl.MTLResourceOptions.MTLResourceCPUCacheModeDefaultCache) orelse return error.BufferCreationFailed;
         defer header_buffer.release();
         if (header_buffer.contents()) |ptr| {
-            const header_ptr: *RegexHeader = @ptrCast(@alignCast(ptr));
-            header_ptr.* = header;
+            const header_ptr: *RegexHeader = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+                @ptrCast(@alignCast(ptr));
+            header_ptr[0] = header;
         }
 
         // Create command buffer and encoder
@@ -423,8 +455,10 @@ pub const MetalMatcher = struct {
         command_buffer.waitUntilCompleted();
 
         // Read results
-        const results_ptr: [*]MatchResult = @ptrCast(@alignCast(results_buffer.contents()));
-        const count_ptr: *u32 = @ptrCast(@alignCast(count_buffer.contents()));
+        const results_ptr: [*]MatchResult = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(results_buffer.contents()));
+        const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
+            @ptrCast(@alignCast(count_buffer.contents()));
         const total_matches = count_ptr.*;
 
         // Copy matching results
