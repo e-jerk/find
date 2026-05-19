@@ -42,7 +42,8 @@ pub fn build(b: *std.Build) void {
     });
 
     // Safe types module from zust
-    const safe_module = b.createModule(.{ .root_source_file = b.path("../zust/src/safe.zig") });
+    const zust_dep = b.dependency("zust", .{});
+    const safe_module = zust_dep.module("safe");
 
     // Vulkan dependencies
     const vulkan_headers = b.dependency("vulkan_headers", .{});

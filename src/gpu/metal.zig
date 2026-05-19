@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const mtl = @import("zig-metal");
 const mod = @import("mod.zig");
 const regex_compiler = @import("regex_compiler.zig");
@@ -73,7 +74,7 @@ pub const MetalMatcher = struct {
         };
 
         const self = try safe.Box(Self).init(allocator, undefined);
-        self[0] = Self{
+        self.ptr.* = Self{
             .device = device,
             .command_queue = command_queue,
             .glob_pipeline = glob_pipeline,
@@ -82,7 +83,7 @@ pub const MetalMatcher = struct {
             .threads_per_group = threads_to_use,
             .capabilities = capabilities,
         };
-        return self;
+        return self.ptr;
     }
 
     pub fn deinit(self: *Self) void {
@@ -120,13 +121,13 @@ pub const MetalMatcher = struct {
 
         // Prepare name offsets and lengths
         const name_offsets = try allocator.alloc(u32, names.len);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(name_offsets);
         const name_lengths = try allocator.alloc(u32, names.len);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(name_lengths);
 
         // Prepare packed names data
         const names_data = try allocator.alloc(u8, total_names_size);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(names_data);
 
         var offset: u32 = 0;
         // safe-transpile: for with index access requires manual review
@@ -134,7 +135,7 @@ pub const MetalMatcher = struct {
             name_offsets[i] = offset;
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             name_lengths[i] = @intCast(name.len);
-            safe.SimdUtils.copy(names_data[offset..][0..name.len], name);
+            @memcpy(names_data[offset..][0..name.len], name);
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             offset += @intCast(name.len);
         }
@@ -157,7 +158,7 @@ pub const MetalMatcher = struct {
         if (config_buffer.contents()) |ptr| {
             const config_ptr: *MatchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            config_ptr[0] = config;
+            config_ptr.* = config;
         }
 
         // Pattern buffer
@@ -166,7 +167,7 @@ pub const MetalMatcher = struct {
         if (pattern_buffer.contents()) |ptr| {
             const pattern_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(ptr);
-            safe.SimdUtils.copy(pattern_ptr[0..pattern.len], pattern);
+            @memcpy(pattern_ptr[0..pattern.len], pattern);
         }
 
         // Names data buffer
@@ -175,7 +176,7 @@ pub const MetalMatcher = struct {
         if (names_buffer.contents()) |ptr| {
             const names_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(ptr);
-            safe.SimdUtils.copy(names_ptr[0..names_data.len], names_data);
+            @memcpy(names_ptr[0..names_data.len], names_data);
         }
 
         // Name offsets buffer
@@ -184,7 +185,7 @@ pub const MetalMatcher = struct {
         if (offsets_buffer.contents()) |ptr| {
             const offsets_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            safe.SimdUtils.copy(offsets_ptr[0..name_offsets.len], name_offsets);
+            @memcpy(offsets_ptr[0..name_offsets.len], name_offsets);
         }
 
         // Name lengths buffer
@@ -193,7 +194,7 @@ pub const MetalMatcher = struct {
         if (lengths_buffer.contents()) |ptr| {
             const lengths_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            safe.SimdUtils.copy(lengths_ptr[0..name_lengths.len], name_lengths);
+            @memcpy(lengths_ptr[0..name_lengths.len], name_lengths);
         }
 
         // Results buffer
@@ -207,7 +208,7 @@ pub const MetalMatcher = struct {
         if (count_buffer.contents()) |ptr| {
             const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            count_ptr[0] = 0;
+            count_ptr.* = 0;
         }
 
         // Create command buffer and encoder
@@ -291,13 +292,13 @@ pub const MetalMatcher = struct {
 
         // Prepare name offsets and lengths
         const name_offsets = try allocator.alloc(u32, names.len);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(name_offsets);
         const name_lengths = try allocator.alloc(u32, names.len);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(name_lengths);
 
         // Prepare packed names data
         const names_data = try allocator.alloc(u8, total_names_size);
-        // safe-transpile: free removed (memory owned by safe type);
+        defer allocator.free(names_data);
 
         var offset: u32 = 0;
         // safe-transpile: for with index access requires manual review
@@ -305,7 +306,7 @@ pub const MetalMatcher = struct {
             name_offsets[i] = offset;
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             name_lengths[i] = @intCast(name.len);
-            safe.SimdUtils.copy(names_data[offset..][0..name.len], name);
+            @memcpy(names_data[offset..][0..name.len], name);
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             offset += @intCast(name.len);
         }
@@ -355,7 +356,7 @@ pub const MetalMatcher = struct {
         if (states_buffer.contents()) |ptr| {
             const states_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            safe.SimdUtils.copy(states_ptr[0..states_data.len], states_data);
+            @memcpy(states_ptr[0..states_data.len], states_data);
         }
 
         // Bitmaps buffer
@@ -366,7 +367,7 @@ pub const MetalMatcher = struct {
             if (bitmaps_buffer.contents()) |ptr| {
                 const bitmaps_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(@alignCast(ptr));
-                safe.SimdUtils.copy(bitmaps_ptr[0..compiled.bitmaps.len], compiled.bitmaps);
+                @memcpy(bitmaps_ptr[0..compiled.bitmaps.len], compiled.bitmaps);
             }
         }
 
@@ -377,7 +378,7 @@ pub const MetalMatcher = struct {
             if (names_buffer.contents()) |ptr| {
                 const names_ptr: [*]u8 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                     @ptrCast(ptr);
-                safe.SimdUtils.copy(names_ptr[0..names_data.len], names_data);
+                @memcpy(names_ptr[0..names_data.len], names_data);
             }
         }
 
@@ -387,7 +388,7 @@ pub const MetalMatcher = struct {
         if (offsets_buffer.contents()) |ptr| {
             const offsets_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            safe.SimdUtils.copy(offsets_ptr[0..name_offsets.len], name_offsets);
+            @memcpy(offsets_ptr[0..name_offsets.len], name_offsets);
         }
 
         // Name lengths buffer
@@ -396,7 +397,7 @@ pub const MetalMatcher = struct {
         if (lengths_buffer.contents()) |ptr| {
             const lengths_ptr: [*]u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            safe.SimdUtils.copy(lengths_ptr[0..name_lengths.len], name_lengths);
+            @memcpy(lengths_ptr[0..name_lengths.len], name_lengths);
         }
 
         // Results buffer

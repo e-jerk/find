@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const gpu = @import("gpu");
 
 // SIMD vector types for optimal performance
@@ -20,11 +21,11 @@ pub fn matchNames(
     options: gpu.MatchOptions,
     allocator: std.mem.Allocator,
 ) !gpu.BatchMatchResult {
-    var matches: std.ArrayListUnmanaged(gpu.MatchResult) = .{};
+    var matches: std.ArrayListUnmanaged(gpu.MatchResult) = std.ArrayListUnmanaged(gpu.MatchResult).empty;
     errdefer matches.deinit(allocator);
 
     // Pre-compute lowercase pattern if case insensitive
-    var lower_pattern_buf: [1024]u8 = .{};
+    var lower_pattern_buf: [1024]u8 = undefined;
     const search_pattern = if (options.case_insensitive and pattern.len <= 1024) blk: {
         toLowerSlice(pattern, lower_pattern_buf[0..pattern.len]);
         break :blk lower_pattern_buf[0..pattern.len];

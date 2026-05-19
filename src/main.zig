@@ -1,4 +1,5 @@
 const std = @import("std");
+const safe = @import("safe");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
 const cpu = @import("cpu");
@@ -268,7 +269,7 @@ const OrPattern = struct {
 };
 
 pub fn main() !u8 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -287,7 +288,7 @@ pub fn main() !u8 {
     // Track paths that were allocated (from stdin) and need to be freed
     var allocated_paths: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
-        for (allocated_paths.items) |p| {
+        for (allocated_paths.items) |_| {
             // safe-transpile: free removed (memory owned by safe type);
         }
         allocated_paths.deinit(allocator);
@@ -721,7 +722,7 @@ fn findFiles(
 ) FindResult {
     var collected_paths: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
-        for (collected_paths.items) |p| {
+        for (collected_paths.items) |_| {
             // safe-transpile: free removed (memory owned by safe type);
         }
         collected_paths.deinit(allocator);
@@ -1380,7 +1381,7 @@ fn walkDirectory(
     var has_entries = false;
     var children: std.ArrayListUnmanaged([]const u8) = .{};
     defer {
-        for (children.items) |child| // safe-transpile: free removed (memory owned by safe type);
+        for (children.items) |_| // safe-transpile: free removed (memory owned by safe type);
             children.deinit(allocator);
     }
 
@@ -2286,7 +2287,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
             const a = if (safe.SimdUtils.eql(arg, "{}")) path else arg;
             if (db_pos + a.len < display_buf.len) {
-                safe.SimdUtils.copy(display_buf[db_pos .. db_pos + a.len], a);
+                @memcpy(display_buf[db_pos .. db_pos + a.len], a);
                 db_pos += a.len;
             }
         }
@@ -2364,7 +2365,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
             const a = if (safe.SimdUtils.eql(arg, "{}")) basename else arg;
             if (db_pos + a.len < display_buf.len) {
-                safe.SimdUtils.copy(display_buf[db_pos .. db_pos + a.len], a);
+                @memcpy(display_buf[db_pos .. db_pos + a.len], a);
                 db_pos += a.len;
             }
         }
