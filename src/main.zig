@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const safe = @import("safe");
 const build_options = @import("build_options");
 const gpu = @import("gpu");
@@ -15,6 +16,46 @@ const BackendMode = enum {
     metal,
     vulkan,
 };
+
+/// Cross-platform stat compatibility shim.
+/// Zig 0.16 removed `std.posix.Stat` on Linux, so we use `statx` there.
+const NativeStat = if (builtin.os.tag == .linux) LinuxStat else std.posix.Stat;
+
+const LinuxStat = struct {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    nlink: u64,
+    size: u64,
+    mtime: i64,
+    uid: u32,
+    gid: u32,
+
+    fn fromPath(path: [*:0]const u8) ?LinuxStat {
+        var stx: std.os.linux.Statx = undefined;
+        if (std.os.linux.statx(std.posix.AT.FDCWD, path, 0, std.os.linux.STATX.BASIC_STATS, &stx) != 0) return null;
+        return .{
+            .dev = (@as(u64, stx.dev_major) << 8) | @as(u64, stx.dev_minor),
+            .ino = stx.ino,
+            .mode = stx.mode,
+            .nlink = stx.nlink,
+            .size = stx.size,
+            .mtime = @intCast(stx.mtime.tv_sec),
+            .uid = stx.uid,
+            .gid = stx.gid,
+        };
+    }
+};
+
+fn nativeStatFromPath(path: [*:0]const u8) ?NativeStat {
+    if (builtin.os.tag == .linux) {
+        return LinuxStat.fromPath(path);
+    } else {
+        var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
+        if (std.c.fstatat(std.posix.AT.FDCWD, path, &st, 0) != 0) return null;
+        return st;
+    }
+}
 
 /// File type filter
 const FileType = enum {
@@ -746,11 +787,11 @@ fn findFiles(
     if (options.stay_on_filesystem) {
         const c_path = allocator.dupeZ(u8, start_path) catch null;
         if (c_path) |cp| {
-            // safe-transpile: free removed (memory owned by safe type);
-            var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-            if (std.c.fstatat(std.posix.AT.FDCWD, cp, &st, 0) == 0) {
-                // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-                options_with_device.start_device = @intCast(st.dev);
+            defer allocator.free(cp);
+            var stx: std.os.linux.Statx = undefined;
+            if (std.os.linux.statx(std.posix.AT.FDCWD, cp, 0, std.os.linux.STATX.BASIC_STATS, &stx) == 0) {
+                const dev = @as(u64, stx.dev_major) << 8 | @as(u64, stx.dev_minor);
+                options_with_device.start_device = @intCast(dev);
             }
         }
     }
@@ -1116,7 +1157,7 @@ fn isDirEmpty(io: std.Io, path: []const u8) bool {
 
 /// Check if a file/directory passes all metadata filters
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn passesFilters(io: std.Io, allocator: std.mem.Allocator, path: []const u8, stat: std.Io.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
+fn passesFilters(io: std.Io, allocator: std.mem.Allocator, path: []const u8, stat: std.Io.File.Stat, posix_stat: ?NativeStat, options: FindOptions) bool {
     const passes_type_filter = switch (options.file_type) {
         .any => true,
         .file => stat.kind == .file,
@@ -1286,8 +1327,9 @@ fn passesFilters(io: std.Io, allocator: std.mem.Allocator, path: []const u8, sta
             break :blk false;
         };
         // safe-transpile: free removed (memory owned by safe type);
-        var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-        if (std.c.fstatat(std.posix.AT.FDCWD, c_sf_path, &st, 0) != 0) break :blk false;
+        const st_opt = nativeStatFromPath(c_sf_path);
+        if (st_opt == null) break :blk false;
+        const st = st_opt.?;
         // safe-transpile: optional unwrap requires manual review
         // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.ino == st.ino and posix_stat.?.dev == st.dev;
@@ -1345,10 +1387,10 @@ fn walkDirectory(
                 const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null or options.inode_number != null or options.samefile_path != null or options.no_user or options.no_group;
                 const posix_stat = if (need_posix_stat) blk: {
                     const c_path = allocator.dupeZ(u8, path) catch break :blk null;
-                    // safe-transpile: free removed (memory owned by safe type);
-                    var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                    if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) != 0) break :blk null;
-                    break :blk st;
+                    defer allocator.free(c_path);
+                    const st_opt = nativeStatFromPath(c_path);
+                    if (st_opt == null) break :blk null;
+                    break :blk st_opt.?;
                 } else null;
 
                 if (passesFilters(io, allocator, path, stat, posix_stat, options)) {
@@ -1377,11 +1419,10 @@ fn walkDirectory(
     // Check -mount: don't descend into directories on different filesystems
     if (options.stay_on_filesystem and options.start_device != null) {
         const c_path = allocator.dupeZ(u8, path) catch return;
-        // safe-transpile: free removed (memory owned by safe type);
-        var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-        if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
-            // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-            if (@as(u64, @intCast(st.dev)) != if (options.start_device) |value| value else return error.NullPointer) {
+        defer allocator.free(c_path);
+        const st_opt = nativeStatFromPath(c_path);
+        if (st_opt) |st| {
+            if (st.dev != if (options.start_device) |value| value else return error.NullPointer) {
                 return; // Different filesystem, skip
             }
         }
@@ -1421,10 +1462,10 @@ fn walkDirectory(
         const need_posix_stat = options.user_name != null or options.group_name != null or options.perm_mode != null or options.links_count != null;
         const posix_stat = if (need_posix_stat) blk: {
             const c_path = allocator.dupeZ(u8, path) catch break :blk null;
-            // safe-transpile: free removed (memory owned by safe type);
-            var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-            if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) != 0) break :blk null;
-            break :blk st;
+            defer allocator.free(c_path);
+            const st_opt = nativeStatFromPath(c_path);
+            if (st_opt == null) break :blk null;
+            break :blk st_opt.?;
         } else null;
 
         if (passesFilters(io, allocator, path, stat, posix_stat, options)) {
@@ -1495,19 +1536,19 @@ fn printFormattedToFile(io: std.Io, path: []const u8, format: []const u8, outfil
     defer output.deinit(allocator);
 
     // Cache stat info lazily
-    var stat_cache: ?std.posix.Stat = null;
+    var stat_cache: ?NativeStat = null;
     var fs_stat_cache: ?std.Io.File.Stat = null;
 
     const getPstat = struct {
-        s: *?std.posix.Stat,
+        s: *?NativeStat,
         p: []const u8,
         a: std.mem.Allocator,
-        fn get(self: @This()) ?*std.posix.Stat {
+        fn get(self: @This()) ?*NativeStat {
             if (self.s.* == null) {
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
-                // safe-transpile: free removed (memory owned by safe type);
-                var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
+                defer self.a.free(c_path);
+                const st_opt = nativeStatFromPath(c_path);
+                if (st_opt) |st| {
                     self.s.* = st;
                 }
             }
@@ -1845,19 +1886,19 @@ fn printFormatted(io: std.Io, path: []const u8, format: []const u8, allocator: s
     defer output.deinit(allocator);
 
     // Cache stat info lazily
-    var stat_cache: ?std.posix.Stat = null;
+    var stat_cache: ?NativeStat = null;
     var fs_stat_cache: ?std.Io.File.Stat = null;
 
     const getPstat = struct {
-        s: *?std.posix.Stat,
+        s: *?NativeStat,
         p: []const u8,
         a: std.mem.Allocator,
-        fn get(self: @This()) ?*std.posix.Stat {
+        fn get(self: @This()) ?*NativeStat {
             if (self.s.* == null) {
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
-                // safe-transpile: free removed (memory owned by safe type);
-                var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
+                defer self.a.free(c_path);
+                const st_opt = nativeStatFromPath(c_path);
+                if (st_opt) |st| {
                     self.s.* = st;
                 }
             }
@@ -2200,9 +2241,10 @@ fn printDetailedListing(io: std.Io, path: []const u8, allocator: std.mem.Allocat
     const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return;
 
     const c_path = allocator.dupeZ(u8, path) catch return;
-    // safe-transpile: free removed (memory owned by safe type);
-    var pst: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-    if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &pst, 0) != 0) return;
+    defer allocator.free(c_path);
+    const pst_opt = nativeStatFromPath(c_path);
+    if (pst_opt == null) return;
+    const pst = pst_opt.?;
 
     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const mode_str = blk: {
