@@ -30,8 +30,10 @@ const LinuxStat = struct {
     mtime: i64,
     uid: u32,
     gid: u32,
+    blocks: u64,
 
     fn fromPath(path: [*:0]const u8) ?LinuxStat {
+        if (builtin.os.tag != .linux) return null;
         var stx: std.os.linux.Statx = undefined;
         if (std.os.linux.statx(std.posix.AT.FDCWD, path, 0, std.os.linux.STATX.BASIC_STATS, &stx) != 0) return null;
         return .{
@@ -40,9 +42,10 @@ const LinuxStat = struct {
             .mode = stx.mode,
             .nlink = stx.nlink,
             .size = stx.size,
-            .mtime = @intCast(stx.mtime.tv_sec),
+            .mtime = @intCast(stx.mtime.sec),
             .uid = stx.uid,
             .gid = stx.gid,
+            .blocks = stx.blocks,
         };
     }
 };
