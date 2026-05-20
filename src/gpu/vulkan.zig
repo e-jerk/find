@@ -878,19 +878,17 @@ pub const VulkanMatcher = struct {
                 .p_texel_buffer_view = undefined,
             },
         };
-        self.vkd.updateDescriptorSets(self.device, 8, &writes, 0, undefined);
+        self.vkd.updateDescriptorSets(self.device, &writes, null);
 
         // Record and submit command buffer
         var command_buffer: vk.CommandBuffer = std.mem.zeroes(vk.CommandBuffer);
         self.vkd.allocateCommandBuffers(self.device, &.{ .command_pool = self.command_pool, .level = .primary, .command_buffer_count = 1 }, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
             @ptrCast(&command_buffer)) catch return error.CommandBufferAllocationFailed;
-        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&command_buffer));
+        defer self.vkd.freeCommandBuffers(self.device, self.command_pool, &.{command_buffer});
 
         self.vkd.beginCommandBuffer(command_buffer, &.{ .flags = .{ .one_time_submit_bit = true } }) catch return error.CommandBufferBeginFailed;
         self.vkd.cmdBindPipeline(command_buffer, .compute, self.regex_compute_pipeline);
-        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.regex_pipeline_layout, 0, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&descriptor_set), 0, undefined);
+        self.vkd.cmdBindDescriptorSets(command_buffer, .compute, self.regex_pipeline_layout, 0, &.{descriptor_set}, null);
 
         // Shader uses local_size_x = 64, dispatch one workgroup per 64 names
         const workgroups = @max(1, (names.len + 63) / 64);
@@ -898,21 +896,17 @@ pub const VulkanMatcher = struct {
         self.vkd.cmdDispatch(command_buffer, @intCast(workgroups), 1, 1);
         self.vkd.endCommandBuffer(command_buffer) catch return error.CommandBufferEndFailed;
 
-        self.vkd.queueSubmit(self.compute_queue, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&vk.SubmitInfo{
-                .wait_semaphore_count = 0,
-                .p_wait_semaphores = undefined,
-                .p_wait_dst_stage_mask = undefined,
-                .command_buffer_count = 1,
-                .p_command_buffers = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-                @ptrCast(&command_buffer),
-                .signal_semaphore_count = 0,
-                .p_signal_semaphores = undefined,
-            }), self.fence) catch return error.QueueSubmitFailed;
-        _ = self.vkd.waitForFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence), .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
-        self.vkd.resetFences(self.device, 1, // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
-            @ptrCast(&self.fence)) catch return error.FenceResetFailed;
+        self.vkd.queueSubmit(self.compute_queue, &.{vk.SubmitInfo{
+            .wait_semaphore_count = 0,
+            .p_wait_semaphores = undefined,
+            .p_wait_dst_stage_mask = undefined,
+            .command_buffer_count = 1,
+            .p_command_buffers = &.{command_buffer},
+            .signal_semaphore_count = 0,
+            .p_signal_semaphores = undefined,
+        }}, self.fence) catch return error.QueueSubmitFailed;
+        _ = self.vkd.waitForFences(self.device, &.{self.fence}, .true, std.math.maxInt(u64)) catch return error.FenceWaitFailed;
+        self.vkd.resetFences(self.device, &.{self.fence}) catch return error.FenceResetFailed;
 
         // Count matches from results
         var match_count: usize = 0;

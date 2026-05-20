@@ -268,25 +268,30 @@ const OrPattern = struct {
     match_path: bool,
 };
 
-pub fn main() !u8 {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !u8 {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    while (args_iter.next()) |arg| {
+        try args.append(allocator, arg);
+    }
+    const args_slice = args.items;
 
-    if (args.len < 2) {
-        printUsage();
+    if (args_slice.len < 2) {
+        printUsage(io);
         return 0;
     }
 
     var options = FindOptions{};
     var backend_mode: BackendMode = .auto;
-    var start_paths: std.ArrayListUnmanaged([]const u8) = .{};
+    var start_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer start_paths.deinit(allocator);
     // Track paths that were allocated (from stdin) and need to be freed
-    var allocated_paths: std.ArrayListUnmanaged([]const u8) = .{};
+    var allocated_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (allocated_paths.items) |_| {
             // safe-transpile: free removed (memory owned by safe type);
@@ -296,14 +301,14 @@ pub fn main() !u8 {
     var verbose = false;
 
     // Track OR patterns for -o support
-    var or_pattern_list: std.ArrayListUnmanaged(OrPattern) = .{};
+    var or_pattern_list: std.ArrayListUnmanaged(OrPattern) = .empty;
     defer or_pattern_list.deinit(allocator);
 
     // Parse arguments
     var i: usize = 1;
     var expecting_or = false; // Track if we're after -o
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (i < args_slice.len) : (i += 1) {
+        const arg = args_slice[i];
 
         if (safe.SimdUtils.eql(arg, "-o")) {
             // Save current pattern (if any) to or_patterns list
@@ -316,50 +321,50 @@ pub fn main() !u8 {
                 options.ipattern = null;
             }
             expecting_or = true;
-        } else if (safe.SimdUtils.eql(arg, "-name") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-name") and i + 1 < args_slice.len) {
             i += 1;
             if (expecting_or) {
-                try or_pattern_list.append(allocator, .{ .pattern = args[i], .case_insensitive = false, .match_path = false });
+                try or_pattern_list.append(allocator, .{ .pattern = args_slice[i], .case_insensitive = false, .match_path = false });
                 expecting_or = false;
             } else {
-                options.pattern = args[i];
+                options.pattern = args_slice[i];
             }
-        } else if (safe.SimdUtils.eql(arg, "-iname") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-iname") and i + 1 < args_slice.len) {
             i += 1;
             if (expecting_or) {
-                try or_pattern_list.append(allocator, .{ .pattern = args[i], .case_insensitive = true, .match_path = false });
+                try or_pattern_list.append(allocator, .{ .pattern = args_slice[i], .case_insensitive = true, .match_path = false });
                 expecting_or = false;
             } else {
-                options.ipattern = args[i];
+                options.ipattern = args_slice[i];
             }
-        } else if (safe.SimdUtils.eql(arg, "-path") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-path") and i + 1 < args_slice.len) {
             i += 1;
-            options.path_pattern = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-ipath") and i + 1 < args.len) {
+            options.path_pattern = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-ipath") and i + 1 < args_slice.len) {
             i += 1;
-            options.ipath_pattern = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-regex") and i + 1 < args.len) {
+            options.ipath_pattern = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-regex") and i + 1 < args_slice.len) {
             i += 1;
-            options.regex_pattern = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-iregex") and i + 1 < args.len) {
+            options.regex_pattern = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-iregex") and i + 1 < args_slice.len) {
             i += 1;
-            options.iregex_pattern = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-type") and i + 1 < args.len) {
+            options.iregex_pattern = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-type") and i + 1 < args_slice.len) {
             i += 1;
-            options.file_type = parseFileType(args[i]) orelse {
-                std.debug.print("Invalid -type argument: {s}\n", .{args[i]});
+            options.file_type = parseFileType(args_slice[i]) orelse {
+                std.debug.print("Invalid -type argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-maxdepth") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-maxdepth") and i + 1 < args_slice.len) {
             i += 1;
-            options.max_depth = std.fmt.parseInt(usize, args[i], 10) catch {
-                std.debug.print("Invalid -maxdepth value: {s}\n", .{args[i]});
+            options.max_depth = std.fmt.parseInt(usize, args_slice[i], 10) catch {
+                std.debug.print("Invalid -maxdepth value: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-mindepth") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mindepth") and i + 1 < args_slice.len) {
             i += 1;
-            options.min_depth = std.fmt.parseInt(usize, args[i], 10) catch {
-                std.debug.print("Invalid -mindepth value: {s}\n", .{args[i]});
+            options.min_depth = std.fmt.parseInt(usize, args_slice[i], 10) catch {
+                std.debug.print("Invalid -mindepth value: {s}\n", .{args_slice[i]});
                 return 1;
             };
         } else if (safe.SimdUtils.eql(arg, "-print0")) {
@@ -370,56 +375,56 @@ pub fn main() !u8 {
             options.negate_pattern = true;
         } else if (safe.SimdUtils.eql(arg, "-empty")) {
             options.empty_only = true;
-        } else if (safe.SimdUtils.eql(arg, "-size") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-size") and i + 1 < args_slice.len) {
             i += 1;
-            options.size_filter = parseSizeArg(args[i]) orelse {
-                std.debug.print("Invalid -size argument: {s}\n", .{args[i]});
+            options.size_filter = parseSizeArg(args_slice[i]) orelse {
+                std.debug.print("Invalid -size argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-mtime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mtime") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .modified, false) orelse {
-                std.debug.print("Invalid -mtime argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .modified, false) orelse {
+                std.debug.print("Invalid -mtime argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-atime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-atime") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .accessed, false) orelse {
-                std.debug.print("Invalid -atime argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .accessed, false) orelse {
+                std.debug.print("Invalid -atime argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-ctime") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-ctime") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .changed, false) orelse {
-                std.debug.print("Invalid -ctime argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .changed, false) orelse {
+                std.debug.print("Invalid -ctime argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-mmin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-mmin") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .modified, true) orelse {
-                std.debug.print("Invalid -mmin argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .modified, true) orelse {
+                std.debug.print("Invalid -mmin argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-amin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-amin") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .accessed, true) orelse {
-                std.debug.print("Invalid -amin argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .accessed, true) orelse {
+                std.debug.print("Invalid -amin argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-cmin") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-cmin") and i + 1 < args_slice.len) {
             i += 1;
-            options.time_filter = parseTimeArg(args[i], .changed, true) orelse {
-                std.debug.print("Invalid -cmin argument: {s}\n", .{args[i]});
+            options.time_filter = parseTimeArg(args_slice[i], .changed, true) orelse {
+                std.debug.print("Invalid -cmin argument: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-prune") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-prune") and i + 1 < args_slice.len) {
             i += 1;
-            options.prune_pattern = args[i];
+            options.prune_pattern = args_slice[i];
         } else if (safe.SimdUtils.eql(arg, "-delete")) {
             options.delete_matched = true;
-        } else if (std.mem.startsWith(u8, arg, "-newer") and i + 1 < args.len) {
+        } else if (std.mem.startsWith(u8, arg, "-newer") and i + 1 < args_slice.len) {
             i += 1;
-            const ref_path = args[i];
+            const ref_path = args_slice[i];
             if (arg.len == 6) {
                 // -newer alone = -newermm
                 options.newer_xy = NewerXYFilter{ .file_time_type = .modified, .ref_time_type = .modified, .ref_path = ref_path };
@@ -433,25 +438,25 @@ pub fn main() !u8 {
                 const x = arg[6];
                 options.newer_xy = NewerXYFilter{ .file_time_type = charToTimeType(x), .ref_time_type = .modified, .ref_path = ref_path };
             }
-        } else if (safe.SimdUtils.eql(arg, "-user") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-user") and i + 1 < args_slice.len) {
             i += 1;
-            options.user_name = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-group") and i + 1 < args.len) {
+            options.user_name = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-group") and i + 1 < args_slice.len) {
             i += 1;
-            options.group_name = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-perm") and i + 1 < args.len) {
+            options.group_name = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-perm") and i + 1 < args_slice.len) {
             i += 1;
-            options.perm_mode = args[i];
+            options.perm_mode = args_slice[i];
         } else if (safe.SimdUtils.eql(arg, "-follow") or safe.SimdUtils.eql(arg, "-L")) {
             options.follow_symlinks = true;
         } else if (safe.SimdUtils.eql(arg, "-depth")) {
             options.depth_first = true;
         } else if (safe.SimdUtils.eql(arg, "-mount") or safe.SimdUtils.eql(arg, "-xdev")) {
             options.stay_on_filesystem = true;
-        } else if (safe.SimdUtils.eql(arg, "-links") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-links") and i + 1 < args_slice.len) {
             i += 1;
-            options.links_count = std.fmt.parseInt(u32, args[i], 10) catch {
-                std.debug.print("Invalid -links value: {s}\n", .{args[i]});
+            options.links_count = std.fmt.parseInt(u32, args_slice[i], 10) catch {
+                std.debug.print("Invalid -links value: {s}\n", .{args_slice[i]});
                 return 1;
             };
         } else if (safe.SimdUtils.eql(arg, "-true")) {
@@ -460,36 +465,36 @@ pub fn main() !u8 {
             options.always_false = true;
         } else if (safe.SimdUtils.eql(arg, "-quit")) {
             options.quit_after_first = true;
-        } else if (safe.SimdUtils.eql(arg, "-printf") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-printf") and i + 1 < args_slice.len) {
             i += 1;
-            options.printf_format = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-fprint") and i + 1 < args.len) {
+            options.printf_format = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-fprint") and i + 1 < args_slice.len) {
             i += 1;
-            options.fprint_file = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-fprintf") and i + 2 < args.len) {
+            options.fprint_file = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-fprintf") and i + 2 < args_slice.len) {
             i += 1;
-            options.fprintf_file = args[i];
+            options.fprintf_file = args_slice[i];
             i += 1;
-            options.fprintf_format = args[i];
-        } else if (safe.SimdUtils.eql(arg, "-inum") and i + 1 < args.len) {
+            options.fprintf_format = args_slice[i];
+        } else if (safe.SimdUtils.eql(arg, "-inum") and i + 1 < args_slice.len) {
             i += 1;
-            options.inode_number = std.fmt.parseInt(u64, args[i], 10) catch {
-                std.debug.print("Invalid -inum value: {s}\n", .{args[i]});
+            options.inode_number = std.fmt.parseInt(u64, args_slice[i], 10) catch {
+                std.debug.print("Invalid -inum value: {s}\n", .{args_slice[i]});
                 return 1;
             };
-        } else if (safe.SimdUtils.eql(arg, "-samefile") and i + 1 < args.len) {
+        } else if (safe.SimdUtils.eql(arg, "-samefile") and i + 1 < args_slice.len) {
             i += 1;
-            options.samefile_path = args[i];
+            options.samefile_path = args_slice[i];
         } else if (safe.SimdUtils.eql(arg, "-nouser")) {
             options.no_user = true;
         } else if (safe.SimdUtils.eql(arg, "-nogroup")) {
             options.no_group = true;
         } else if (safe.SimdUtils.eql(arg, "-exec")) {
             // Collect command and args until ; or +
-            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .empty;
             i += 1;
-            while (i < args.len) : (i += 1) {
-                const exec_arg = args[i];
+            while (i < args_slice.len) : (i += 1) {
+                const exec_arg = args_slice[i];
                 if (safe.SimdUtils.eql(exec_arg, ";")) {
                     options.exec_plus = false;
                     break;
@@ -505,10 +510,10 @@ pub fn main() !u8 {
             }
         } else if (safe.SimdUtils.eql(arg, "-ok")) {
             // Collect command and args until ;
-            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .empty;
             i += 1;
-            while (i < args.len) : (i += 1) {
-                const exec_arg = args[i];
+            while (i < args_slice.len) : (i += 1) {
+                const exec_arg = args_slice[i];
                 if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
@@ -520,10 +525,10 @@ pub fn main() !u8 {
             }
         } else if (safe.SimdUtils.eql(arg, "-execdir")) {
             // Collect command and args until ;
-            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .empty;
             i += 1;
-            while (i < args.len) : (i += 1) {
-                const exec_arg = args[i];
+            while (i < args_slice.len) : (i += 1) {
+                const exec_arg = args_slice[i];
                 if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
@@ -535,10 +540,10 @@ pub fn main() !u8 {
             }
         } else if (safe.SimdUtils.eql(arg, "-okdir")) {
             // Collect command and args until ;
-            var exec_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var exec_args: std.ArrayListUnmanaged([]const u8) = .empty;
             i += 1;
-            while (i < args.len) : (i += 1) {
-                const exec_arg = args[i];
+            while (i < args_slice.len) : (i += 1) {
+                const exec_arg = args_slice[i];
                 if (safe.SimdUtils.eql(exec_arg, ";")) {
                     break;
                 } else {
@@ -571,17 +576,17 @@ pub fn main() !u8 {
         } else if (safe.SimdUtils.eql(arg, "--verbose") or safe.SimdUtils.eql(arg, "-v")) {
             verbose = true;
         } else if (safe.SimdUtils.eql(arg, "-h") or safe.SimdUtils.eql(arg, "--help")) {
-            printUsage();
+            printUsage(io);
             return 0;
         } else if (safe.SimdUtils.eql(arg, "--version")) {
-            _ = std.posix.write(std.posix.STDOUT_FILENO, "find (e-jerk GPU-accelerated) 1.0\n") catch {};
+            _ = std.Io.File.stdout().writeStreamingAll(io, "find (e-jerk GPU-accelerated) 1.0\n") catch {};
             return 0;
         } else if (arg[0] != '-' or safe.SimdUtils.eql(arg, "-")) {
             // Treat non-option args or "-" as paths
             try start_paths.append(allocator, arg);
         } else {
             std.debug.print("Unknown option: {s}\n", .{arg});
-            printUsage();
+            printUsage(io);
             return 1;
         }
     }
@@ -603,9 +608,10 @@ pub fn main() !u8 {
     // Default to current directory if no path specified
     // Check if we should read paths from stdin
     var read_stdin_paths = false;
+    var stdin_file = std.Io.File.stdin();
     if (start_paths.items.len == 0) {
         // Check if stdin has data (not a tty)
-        if (!std.posix.isatty(std.posix.STDIN_FILENO)) {
+        if (!(stdin_file.isTty(io) catch false)) {
             read_stdin_paths = true;
         } else {
             try start_paths.append(allocator, ".");
@@ -623,7 +629,7 @@ pub fn main() !u8 {
     // Read paths from stdin if needed
     if (read_stdin_paths) {
         // Remove "-" from start_paths as we're going to read real paths from stdin
-        var new_paths: std.ArrayListUnmanaged([]const u8) = .{};
+        var new_paths: std.ArrayListUnmanaged([]const u8) = .empty;
         for (start_paths.items) |path| {
             if (!safe.SimdUtils.eql(path, "-")) {
                 try new_paths.append(allocator, path);
@@ -631,15 +637,15 @@ pub fn main() !u8 {
         }
         start_paths.deinit(allocator);
         start_paths = new_paths;
-        var stdin_list: std.ArrayListUnmanaged(u8) = .{};
+        var stdin_list: std.ArrayListUnmanaged(u8) = .empty;
         defer stdin_list.deinit(allocator);
-        var buf: [4096]u8 = .{};
+        var buf: [4096]u8 = undefined;
         var __zust_loop_counter: u64 = 0;
         while (true) {
             __zust_loop_counter += 1;
             if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
 
-            const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch |err| {
+            const bytes_read = stdin_file.readStreaming(io, &[_][]u8{&buf}) catch |err| {
                 if (err == error.WouldBlock) continue;
                 break;
             };
@@ -676,7 +682,7 @@ pub fn main() !u8 {
     var total_matches: usize = 0;
     var had_error = false;
     for (start_paths.items) |start_path| {
-        const result = findFiles(allocator, start_path, options, backend_mode, verbose);
+        const result = findFiles(io, allocator, start_path, options, backend_mode, verbose);
         if (result.had_error) {
             had_error = true;
         }
@@ -714,13 +720,14 @@ var g_quit_requested = false;
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFiles(
+    io: std.Io,
     allocator: std.mem.Allocator,
     start_path: []const u8,
     options: FindOptions,
     backend_mode: BackendMode,
     verbose: bool,
 ) FindResult {
-    var collected_paths: std.ArrayListUnmanaged([]const u8) = .{};
+    var collected_paths: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (collected_paths.items) |_| {
             // safe-transpile: free removed (memory owned by safe type);
@@ -729,7 +736,7 @@ fn findFiles(
     }
 
     // Check if start path exists
-    std.fs.cwd().access(start_path, .{}) catch |err| {
+    std.Io.Dir.cwd().access(io, start_path, .{}) catch |err| {
         std.debug.print("find: '{s}': {}\n", .{ start_path, err });
         return .{ .count = 0, .had_error = true };
     };
@@ -741,7 +748,7 @@ fn findFiles(
         if (c_path) |cp| {
             // safe-transpile: free removed (memory owned by safe type);
             var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-            if (std.c.stat(cp, &st) == 0) {
+            if (std.c.fstatat(std.posix.AT.FDCWD, cp, &st, 0) == 0) {
                 // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                 options_with_device.start_device = @intCast(st.dev);
             }
@@ -751,7 +758,7 @@ fn findFiles(
     g_quit_requested = false;
 
     // Collect all file paths first
-    walkDirectory(allocator, start_path, options_with_device, &collected_paths, 0) catch |err| {
+    walkDirectory(io, allocator, start_path, options_with_device, &collected_paths, 0) catch |err| {
         if (err == error.QuitRequested) {
             // Normal exit after -quit
         } else {
@@ -782,7 +789,7 @@ fn findFiles(
             const should_output = if (options.negate_pattern) !matches else matches;
             if (should_output) {
                 if (!options.count_only) {
-                    performAction(path, options, allocator);
+                    performAction(io, path, options, allocator);
                 }
                 match_count += 1;
             }
@@ -793,16 +800,16 @@ fn findFiles(
     // If no pattern specified, just print all collected paths
     if (options.pattern == null and options.ipattern == null and options.path_pattern == null and options.ipath_pattern == null and options.regex_pattern == null and options.iregex_pattern == null) {
         for (collected_paths.items) |path| {
-            performAction(path, options, allocator);
+            performAction(io, path, options, allocator);
         }
         return .{ .count = collected_paths.items.len, .had_error = false };
     }
 
     // Handle regex patterns (GPU-accelerated or CPU fallback)
     if (options.regex_pattern != null or options.iregex_pattern != null) {
-        const regex_pat = options.regex_pattern orelse if (options.iregex_pattern) |value| value else return error.NullPointer;
+        const regex_pat = options.regex_pattern orelse if (options.iregex_pattern) |value| value else return .{ .count = 0, .had_error = true };
         const case_insensitive = options.iregex_pattern != null;
-        return findFilesWithRegex(allocator, collected_paths.items, regex_pat, case_insensitive, options, backend_mode, verbose);
+        return findFilesWithRegex(io, allocator, collected_paths.items, regex_pat, case_insensitive, options, backend_mode, verbose);
     }
 
     // Determine pattern and options for matching
@@ -848,7 +855,7 @@ fn findFiles(
                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            performAction(path, options, allocator);
+                            performAction(io, path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -856,7 +863,7 @@ fn findFiles(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        performAction(collected_paths.items[match.name_idx], options, allocator);
+                        performAction(io, collected_paths.items[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -899,7 +906,7 @@ fn findFiles(
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (!matched_set.contains(@intCast(idx))) {
                 if (!options.count_only) {
-                    performAction(path, options, allocator);
+                    performAction(io, path, options, allocator);
                 }
                 match_count += 1;
             }
@@ -907,7 +914,7 @@ fn findFiles(
     } else {
         for (result.matches) |match| {
             if (!options.count_only) {
-                performAction(collected_paths.items[match.name_idx], options, allocator);
+                performAction(io, collected_paths.items[match.name_idx], options, allocator);
             }
             match_count += 1;
         }
@@ -919,6 +926,7 @@ fn findFiles(
 /// Find files using regex pattern matching (GPU-accelerated)
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFilesWithRegex(
+    io: std.Io,
     allocator: std.mem.Allocator,
     paths: []const []const u8,
     pattern: []const u8,
@@ -954,7 +962,7 @@ fn findFilesWithRegex(
                 if (verbose) {
                     std.debug.print("Metal regex failed: {}, falling back to CPU\n", .{err});
                 }
-                return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+                return findFilesWithRegexCpu(io, allocator, paths, pattern, case_insensitive, options);
             };
             defer result.deinit();
 
@@ -969,7 +977,7 @@ fn findFilesWithRegex(
                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            performAction(path, options, allocator);
+                            performAction(io, path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -977,7 +985,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        performAction(paths[match.name_idx], options, allocator);
+                        performAction(io, paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -1010,7 +1018,7 @@ fn findFilesWithRegex(
                 if (verbose) {
                     std.debug.print("Vulkan regex failed: {}, falling back to CPU\n", .{err});
                 }
-                return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+                return findFilesWithRegexCpu(io, allocator, paths, pattern, case_insensitive, options);
             };
             defer result.deinit();
 
@@ -1025,7 +1033,7 @@ fn findFilesWithRegex(
                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                     if (!matched_set.contains(@intCast(idx))) {
                         if (!options.count_only) {
-                            performAction(path, options, allocator);
+                            performAction(io, path, options, allocator);
                         }
                         match_count += 1;
                     }
@@ -1033,7 +1041,7 @@ fn findFilesWithRegex(
             } else {
                 for (result.matches) |match| {
                     if (!options.count_only) {
-                        performAction(paths[match.name_idx], options, allocator);
+                        performAction(io, paths[match.name_idx], options, allocator);
                     }
                     match_count += 1;
                 }
@@ -1048,12 +1056,13 @@ fn findFilesWithRegex(
     }
 
     // CPU fallback
-    return findFilesWithRegexCpu(allocator, paths, pattern, case_insensitive, options);
+    return findFilesWithRegexCpu(io, allocator, paths, pattern, case_insensitive, options);
 }
 
 /// CPU regex matching fallback
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn findFilesWithRegexCpu(
+    io: std.Io,
     allocator: std.mem.Allocator,
     paths: []const []const u8,
     pattern: []const u8,
@@ -1071,7 +1080,8 @@ fn findFilesWithRegexCpu(
         // GNU find -regex matches the entire path
         var matched = false;
         if (compiled.find(path, allocator)) |match_opt| {
-            if (match_opt) |match| {
+            if (match_opt) |m| {
+                var match = m;
                 // Check if match spans entire string
                 if (match.start == 0 and match.end == path.len) {
                     matched = true;
@@ -1083,8 +1093,8 @@ fn findFilesWithRegexCpu(
         const should_output = if (options.negate_pattern) !matched else matched;
         if (should_output) {
             if (!options.count_only) {
-                performAction(path, options, allocator);
-            }
+                    performAction(io, path, options, allocator);
+                }
             match_count += 1;
         }
     }
@@ -1096,17 +1106,17 @@ const QuitError = error{QuitRequested};
 
 /// Check if a directory has no entries (other than . and ..)
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn isDirEmpty(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch return false;
-    defer dir.close();
+fn isDirEmpty(io: std.Io, path: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
     var iter = dir.iterate();
-    const entry = iter.next() catch return false;
+    const entry = iter.next(io) catch return false;
     return entry == null;
 }
 
 /// Check if a file/directory passes all metadata filters
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
+fn passesFilters(io: std.Io, allocator: std.mem.Allocator, path: []const u8, stat: std.Io.File.Stat, posix_stat: ?std.posix.Stat, options: FindOptions) bool {
     const passes_type_filter = switch (options.file_type) {
         .any => true,
         .file => stat.kind == .file,
@@ -1124,7 +1134,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
         if (stat.kind == .file) {
             passes_empty_filter = stat.size == 0;
         } else if (stat.kind == .directory) {
-            passes_empty_filter = isDirEmpty(path);
+            passes_empty_filter = isDirEmpty(io, path);
         } else {
             passes_empty_filter = false;
         }
@@ -1142,31 +1152,31 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
 
     // Check -mtime/-atime/-ctime filter
     const passes_time_filter = if (options.time_filter) |tf| blk: {
-        const now = std.time.timestamp();
+        const now = std.Io.Clock.real.now(io).toSeconds();
         const ns_per_sec: i128 = 1_000_000_000;
         // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
         const file_time: i64 = @intCast(switch (tf.time_type) {
-            .modified => @divFloor(stat.mtime, ns_per_sec),
-            .accessed => @divFloor(stat.atime, ns_per_sec),
-            .changed => @divFloor(stat.ctime, ns_per_sec),
+            .modified => @divFloor(stat.mtime.nanoseconds, ns_per_sec),
+            .accessed => @divFloor(stat.atime.?.nanoseconds, ns_per_sec),
+            .changed => @divFloor(stat.ctime.nanoseconds, ns_per_sec),
         });
         break :blk tf.matches(file_time, now);
     } else true;
 
     // Check -newer / -newerXY filter
     const passes_newer_filter = if (options.newer_xy) |nf| blk: {
-        const ref_stat = std.fs.cwd().statFile(nf.ref_path) catch {
+        const ref_stat = std.Io.Dir.cwd().statFile(io, nf.ref_path, .{}) catch {
             break :blk false;
         };
         const file_time = switch (nf.file_time_type) {
-            .modified => stat.mtime,
-            .accessed => stat.atime,
-            .changed => stat.ctime,
+            .modified => stat.mtime.nanoseconds,
+            .accessed => stat.atime.?.nanoseconds,
+            .changed => stat.ctime.nanoseconds,
         };
         const ref_time = switch (nf.ref_time_type) {
-            .modified => ref_stat.mtime,
-            .accessed => ref_stat.atime,
-            .changed => ref_stat.ctime,
+            .modified => ref_stat.mtime.nanoseconds,
+            .accessed => ref_stat.atime.?.nanoseconds,
+            .changed => ref_stat.ctime.nanoseconds,
         };
         break :blk file_time > ref_time;
     } else true;
@@ -1175,7 +1185,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     const passes_user_filter = if (options.user_name) |uname| blk: {
         if (posix_stat == null) break :blk false;
         const target_uid = std.fmt.parseInt(u32, uname, 10) catch {
-            const c_uname = safe.Pool.dupeZ(u8, uname) catch {
+            const c_uname = allocator.dupeZ(u8, uname) catch {
                 break :blk false;
             };
             // safe-transpile: free removed (memory owned by safe type);
@@ -1193,7 +1203,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     const passes_group_filter = if (options.group_name) |gname| blk: {
         if (posix_stat == null) break :blk false;
         const target_gid = std.fmt.parseInt(u32, gname, 10) catch {
-            const c_gname = safe.Pool.dupeZ(u8, gname) catch {
+            const c_gname = allocator.dupeZ(u8, gname) catch {
                 break :blk false;
             };
             // safe-transpile: free removed (memory owned by safe type);
@@ -1210,7 +1220,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -readable, -writable, -executable
     var passes_access_filter = true;
     if (options.readable or options.writable or options.executable) {
-        const c_path = safe.Pool.dupeZ(u8, path) catch null;
+        const c_path = allocator.dupeZ(u8, path) catch null;
         if (c_path) |cp| {
             // safe-transpile: free removed (memory owned by safe type);
             var access_mode: c_uint = 0;
@@ -1272,12 +1282,12 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
     // Check -samefile filter
     const passes_samefile_filter = if (options.samefile_path) |sf_path| blk: {
         if (posix_stat == null) break :blk false;
-        const c_sf_path = safe.Pool.dupeZ(u8, sf_path) catch {
+        const c_sf_path = allocator.dupeZ(u8, sf_path) catch {
             break :blk false;
         };
         // safe-transpile: free removed (memory owned by safe type);
         var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-        if (std.c.stat(c_sf_path, &st) != 0) break :blk false;
+        if (std.c.fstatat(std.posix.AT.FDCWD, c_sf_path, &st, 0) != 0) break :blk false;
         // safe-transpile: optional unwrap requires manual review
         // safe-transpile: optional unwrap requires manual review
         break :blk posix_stat.?.ino == st.ino and posix_stat.?.dev == st.dev;
@@ -1308,6 +1318,7 @@ fn passesFilters(path: []const u8, stat: std.fs.File.Stat, posix_stat: ?std.posi
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
 fn walkDirectory(
+    io: std.Io,
     allocator: std.mem.Allocator,
     path: []const u8,
     options: FindOptions,
@@ -1322,11 +1333,11 @@ fn walkDirectory(
     }
 
     // Try to open as directory first to determine type
-    var dir = std.fs.cwd().openDir(path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| {
         if (err == error.NotDir) {
             // It's a file, not a directory
             if (depth >= options.min_depth) {
-                const stat = std.fs.cwd().statFile(path) catch |stat_err| {
+                const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |stat_err| {
                     if (stat_err == error.FileNotFound) return;
                     return stat_err;
                 };
@@ -1336,11 +1347,11 @@ fn walkDirectory(
                     const c_path = allocator.dupeZ(u8, path) catch break :blk null;
                     // safe-transpile: free removed (memory owned by safe type);
                     var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                    if (std.c.stat(c_path, &st) != 0) break :blk null;
+                    if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) != 0) break :blk null;
                     break :blk st;
                 } else null;
 
-                if (passesFilters(path, stat, posix_stat, options)) {
+                if (passesFilters(io, allocator, path, stat, posix_stat, options)) {
                     try collected.append(allocator, try allocator.dupe(u8, path));
                     if (options.quit_after_first) {
                         g_quit_requested = true;
@@ -1353,7 +1364,7 @@ fn walkDirectory(
         if (err == error.FileNotFound or err == error.AccessDenied) return;
         return err;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     // Check -prune: if this directory matches the prune pattern, skip it entirely
     if (options.prune_pattern) |prune_pat| {
@@ -1368,7 +1379,7 @@ fn walkDirectory(
         const c_path = allocator.dupeZ(u8, path) catch return;
         // safe-transpile: free removed (memory owned by safe type);
         var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-        if (std.c.stat(c_path, &st) == 0) {
+        if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
             if (@as(u64, @intCast(st.dev)) != if (options.start_device) |value| value else return error.NullPointer) {
                 return; // Different filesystem, skip
@@ -1379,13 +1390,13 @@ fn walkDirectory(
     // Recurse into directory contents
     var iter = dir.iterate();
     var has_entries = false;
-    var children: std.ArrayListUnmanaged([]const u8) = .{};
+    var children: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
         for (children.items) |_| // safe-transpile: free removed (memory owned by safe type);
             children.deinit(allocator);
     }
 
-    while (try iter.next()) |entry| {
+    while (try iter.next(io)) |entry| {
         has_entries = true;
         const child_path = try std.fs.path.join(allocator, &[_][]const u8{ path, entry.name });
         try children.append(allocator, child_path);
@@ -1394,7 +1405,7 @@ fn walkDirectory(
     // With -depth, recurse into children BEFORE adding the directory
     if (options.depth_first) {
         for (children.items) |child_path| {
-            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            try walkDirectory(io, allocator, child_path, options, collected, depth + 1);
             if (g_quit_requested) return error.QuitRequested;
         }
     }
@@ -1402,7 +1413,7 @@ fn walkDirectory(
     // It's a directory - add it if it passes filters
     if (depth >= options.min_depth) {
         // For directories, we need to check filters. statFile works on directories too.
-        const stat = std.fs.cwd().statFile(path) catch |stat_err| {
+        const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch |stat_err| {
             if (stat_err == error.FileNotFound) return;
             return stat_err;
         };
@@ -1412,11 +1423,11 @@ fn walkDirectory(
             const c_path = allocator.dupeZ(u8, path) catch break :blk null;
             // safe-transpile: free removed (memory owned by safe type);
             var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-            if (std.c.stat(c_path, &st) != 0) break :blk null;
+            if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) != 0) break :blk null;
             break :blk st;
         } else null;
 
-        if (passesFilters(path, stat, posix_stat, options)) {
+        if (passesFilters(io, allocator, path, stat, posix_stat, options)) {
             try collected.append(allocator, try allocator.dupe(u8, path));
             if (options.quit_after_first) {
                 g_quit_requested = true;
@@ -1428,61 +1439,64 @@ fn walkDirectory(
     // Without -depth, recurse into children AFTER adding the directory
     if (!options.depth_first) {
         for (children.items) |child_path| {
-            try walkDirectory(allocator, child_path, options, collected, depth + 1);
+            try walkDirectory(io, allocator, child_path, options, collected, depth + 1);
             if (g_quit_requested) return error.QuitRequested;
         }
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn printPath(path: []const u8, print0: bool) void {
+fn printPath(io: std.Io, path: []const u8, print0: bool) void {
     if (print0) {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
-        _ = std.posix.write(std.posix.STDOUT_FILENO, &[_]u8{0}) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, path) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, &[_]u8{0}) catch {};
     } else {
-        _ = std.posix.write(std.posix.STDOUT_FILENO, path) catch {};
-        _ = std.posix.write(std.posix.STDOUT_FILENO, "\n") catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, path) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, "\n") catch {};
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn printPathToFile(path: []const u8, print0: bool, outfile: []const u8) void {
-    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+fn printPathToFile(io: std.Io, path: []const u8, print0: bool, outfile: []const u8) void {
+    const file = std.Io.Dir.cwd().openFile(io, outfile, .{ .mode = .write_only }) catch |err| {
         if (err == error.FileNotFound) {
             // Create the file
-            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
-            defer new_file.close();
+            const new_file = std.Io.Dir.cwd().createFile(io, outfile, .{}) catch return;
+            defer new_file.close(io);
             if (print0) {
-                _ = new_file.write(path) catch {};
-                _ = new_file.write(&[_]u8{0}) catch {};
+                _ = new_file.writeStreamingAll(io, path) catch {};
+                _ = new_file.writeStreamingAll(io, &[_]u8{0}) catch {};
             } else {
-                _ = new_file.write(path) catch {};
-                _ = new_file.write("\n") catch {};
+                _ = new_file.writeStreamingAll(io, path) catch {};
+                _ = new_file.writeStreamingAll(io, "\n") catch {};
             }
             return;
         }
         return;
     };
-    defer file.close();
+    defer file.close(io);
     // Append to existing file
-    file.seekFromEnd(0) catch {};
+    var writer = file.writer(io, &.{});
+    if (file.stat(io)) |stat| {
+        writer.seekTo(stat.size) catch {};
+    } else |_| {}
     if (print0) {
-        _ = file.write(path) catch {};
-        _ = file.write(&[_]u8{0}) catch {};
+        _ = file.writeStreamingAll(io, path) catch {};
+        _ = file.writeStreamingAll(io, &[_]u8{0}) catch {};
     } else {
-        _ = file.write(path) catch {};
-        _ = file.write("\n") catch {};
+        _ = file.writeStreamingAll(io, path) catch {};
+        _ = file.writeStreamingAll(io, "\n") catch {};
     }
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u8, allocator: std.mem.Allocator) void {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+fn printFormattedToFile(io: std.Io, path: []const u8, format: []const u8, outfile: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
     // Cache stat info lazily
     var stat_cache: ?std.posix.Stat = null;
-    var fs_stat_cache: ?std.fs.File.Stat = null;
+    var fs_stat_cache: ?std.Io.File.Stat = null;
 
     const getPstat = struct {
         s: *?std.posix.Stat,
@@ -1493,7 +1507,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
                 // safe-transpile: free removed (memory owned by safe type);
                 var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                if (std.c.stat(c_path, &st) == 0) {
+                if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
                     self.s.* = st;
                 }
             }
@@ -1501,17 +1515,18 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
         }
     };
     const getFstat = struct {
-        s: *?std.fs.File.Stat,
+        s: *?std.Io.File.Stat,
         p: []const u8,
-        fn get(self: @This()) ?*std.fs.File.Stat {
+        io: std.Io,
+        fn get(self: @This()) ?*std.Io.File.Stat {
             if (self.s.* == null) {
-                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+                self.s.* = std.Io.Dir.cwd().statFile(self.io, self.p, .{}) catch return null;
             }
             return if (self.s.*) |*st| st else null;
         }
     };
     const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
-    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path, .io = io };
 
     var i: usize = 0;
     while (i < format.len) : (i += 1) {
@@ -1527,28 +1542,28 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                 },
                 's' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'U' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'G' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'm' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = .{};
+                        var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -1591,7 +1606,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                             if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
                             if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
                         };
-                        var buf: [16]u8 = .{};
+                        var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
                             file_type_char,
                             &rwx,
@@ -1608,7 +1623,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = .{};
+                            var buf: [32]u8 = undefined;
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1621,7 +1636,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = .{};
+                            var buf: [32]u8 = undefined;
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1636,14 +1651,14 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                 },
                 'i' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'n' => {
                     if (pstat.get()) |st| {
-                        var buf: [8]u8 = .{};
+                        var buf: [8]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -1655,11 +1670,11 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                         const time_esc = format[i];
                         if (fstat.get()) |st| {
                             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime.nanoseconds, std.time.ns_per_s));
                             switch (time_esc) {
                                 '@' => {
-                                    var buf: [32]u8 = .{};
-                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime.nanoseconds, std.time.ns_per_s), 1000000) }) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 '+' => {
@@ -1669,7 +1684,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                     const year_day = epoch_day.calculateYearDay();
                                     const month_day = year_day.calculateMonthDay();
                                     const day_secs = epoch.getDaySeconds();
-                                    var buf: [64]u8 = .{};
+                                    var buf: [64]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
                                         year_day.year,
                                         month_day.month,
@@ -1684,7 +1699,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const year_day = epoch.getEpochDay().calculateYearDay();
-                                    var buf: [16]u8 = .{};
+                                    var buf: [16]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -1692,7 +1707,7 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -1700,28 +1715,28 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'H' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'M' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'S' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -1773,25 +1788,28 @@ fn printFormattedToFile(path: []const u8, format: []const u8, outfile: []const u
         }
     }
 
-    const file = std.fs.cwd().openFile(outfile, .{ .mode = .write_only }) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, outfile, .{ .mode = .write_only }) catch |err| {
         if (err == error.FileNotFound) {
-            const new_file = std.fs.cwd().createFile(outfile, .{}) catch return;
-            defer new_file.close();
-            _ = new_file.write(output.items) catch {};
+            const new_file = std.Io.Dir.cwd().createFile(io, outfile, .{}) catch return;
+            defer new_file.close(io);
+            _ = new_file.writeStreamingAll(io, output.items) catch {};
             return;
         }
         return;
     };
-    defer file.close();
-    _ = file.seekFromEnd(0) catch 0;
-    _ = file.write(output.items) catch {};
+    defer file.close(io);
+    var writer = file.writer(io, &.{});
+    if (file.stat(io)) |stat| {
+        writer.seekTo(stat.size) catch {};
+    } else |_| {}
+    _ = file.writeStreamingAll(io, output.items) catch {};
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn deletePath(path: []const u8) void {
+fn deletePath(io: std.Io, path: []const u8) void {
     // Try to delete as file first, then as empty directory
-    std.fs.cwd().deleteFile(path) catch {
-        std.fs.cwd().deleteDir(path) catch {};
+    std.Io.Dir.cwd().deleteFile(io, path) catch {
+        std.Io.Dir.cwd().deleteDir(io, path) catch {};
     };
 }
 
@@ -1822,13 +1840,13 @@ fn fileTypeCharShort(mode: u16) u8 {
 
 /// Print formatted output according to GNU find -printf FORMAT string
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+fn printFormatted(io: std.Io, path: []const u8, format: []const u8, allocator: std.mem.Allocator) void {
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
     // Cache stat info lazily
     var stat_cache: ?std.posix.Stat = null;
-    var fs_stat_cache: ?std.fs.File.Stat = null;
+    var fs_stat_cache: ?std.Io.File.Stat = null;
 
     const getPstat = struct {
         s: *?std.posix.Stat,
@@ -1839,7 +1857,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 const c_path = self.a.dupeZ(u8, self.p) catch return null;
                 // safe-transpile: free removed (memory owned by safe type);
                 var st: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-                if (std.c.stat(c_path, &st) == 0) {
+                if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &st, 0) == 0) {
                     self.s.* = st;
                 }
             }
@@ -1847,17 +1865,18 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
         }
     };
     const getFstat = struct {
-        s: *?std.fs.File.Stat,
+        s: *?std.Io.File.Stat,
         p: []const u8,
-        fn get(self: @This()) ?*std.fs.File.Stat {
+        io: std.Io,
+        fn get(self: @This()) ?*std.Io.File.Stat {
             if (self.s.* == null) {
-                self.s.* = std.fs.cwd().statFile(self.p) catch return null;
+                self.s.* = std.Io.Dir.cwd().statFile(self.io, self.p, .{}) catch return null;
             }
             return if (self.s.*) |*st| st else null;
         }
     };
     const pstat = getPstat{ .s = &stat_cache, .p = path, .a = allocator };
-    const fstat = getFstat{ .s = &fs_stat_cache, .p = path };
+    const fstat = getFstat{ .s = &fs_stat_cache, .p = path, .io = io };
 
     var i: usize = 0;
     while (i < format.len) : (i += 1) {
@@ -1873,28 +1892,28 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 },
                 's' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.size}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'U' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'G' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'm' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = .{};
+                        var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{o}", .{st.mode & 0o7777}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -1937,7 +1956,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                             if (mode & @as(u16, @intCast(std.posix.S.IWOTH)) != 0) 'w' else '-',
                             if (has_sticky) (if (oth_exec) 't' else 'T') else (if (oth_exec) 'x' else '-'),
                         };
-                        var buf: [16]u8 = .{};
+                        var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{c}{s}{s}{s}", .{
                             file_type_char,
                             &rwx,
@@ -1954,7 +1973,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = .{};
+                            var buf: [32]u8 = undefined;
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.uid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1967,7 +1986,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                 output.appendSlice(allocator, std.mem.span(name)) catch {};
                             }
                         } else {
-                            var buf: [32]u8 = .{};
+                            var buf: [32]u8 = undefined;
                             const str = std.fmt.bufPrint(&buf, "{d}", .{st.gid}) catch "";
                             output.appendSlice(allocator, str) catch {};
                         }
@@ -1981,14 +2000,14 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                 },
                 'i' => {
                     if (pstat.get()) |st| {
-                        var buf: [32]u8 = .{};
+                        var buf: [32]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.ino}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
                 },
                 'n' => {
                     if (pstat.get()) |st| {
-                        var buf: [16]u8 = .{};
+                        var buf: [16]u8 = undefined;
                         const str = std.fmt.bufPrint(&buf, "{d}", .{st.nlink}) catch "";
                         output.appendSlice(allocator, str) catch {};
                     }
@@ -2000,11 +2019,11 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                         const time_esc = format[i];
                         if (fstat.get()) |st| {
                             // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime, std.time.ns_per_s));
+                            const mtime_sec: i64 = @intCast(@divFloor(st.mtime.nanoseconds, std.time.ns_per_s));
                             switch (time_esc) {
                                 '@' => {
-                                    var buf: [32]u8 = .{};
-                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime, std.time.ns_per_s), 1000000) }) catch "";
+                                    var buf: [32]u8 = undefined;
+                                    const str = std.fmt.bufPrint(&buf, "{d}.{d}", .{ mtime_sec, @divFloor(@mod(st.mtime.nanoseconds, std.time.ns_per_s), 1000000) }) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 '+' => {
@@ -2014,7 +2033,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                     const year_day = epoch_day.calculateYearDay();
                                     const month_day = year_day.calculateMonthDay();
                                     const day_secs = epoch.getDaySeconds();
-                                    var buf: [64]u8 = .{};
+                                    var buf: [64]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d}-{d:0>2}-{d:0>2}+{d:0>2}:{d:0>2}:{d:0>2}", .{
                                         year_day.year,
                                         month_day.month,
@@ -2029,7 +2048,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const year_day = epoch.getEpochDay().calculateYearDay();
-                                    var buf: [16]u8 = .{};
+                                    var buf: [16]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d}", .{year_day.year}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -2037,7 +2056,7 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.month}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -2045,28 +2064,28 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
                                     const month_day = epoch.getEpochDay().calculateYearDay().calculateMonthDay();
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{month_day.day_index + 1}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'H' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getHoursIntoDay()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'M' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getMinutesIntoHour()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
                                 'S' => {
                                     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
                                     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
-                                    var buf: [8]u8 = .{};
+                                    var buf: [8]u8 = undefined;
                                     const str = std.fmt.bufPrint(&buf, "{d:0>2}", .{epoch.getDaySeconds().getSecondsIntoMinute()}) catch "";
                                     output.appendSlice(allocator, str) catch {};
                                 },
@@ -2141,13 +2160,13 @@ fn printFormatted(path: []const u8, format: []const u8, allocator: std.mem.Alloc
         }
     }
 
-    _ = std.posix.write(std.posix.STDOUT_FILENO, output.items) catch {};
+    _ = std.Io.File.stdout().writeStreamingAll(io, output.items) catch {};
 }
 
 /// Format a POSIX mode into ls -l style string (e.g., "-rw-r--r--")
 /// @safe(returns: [10]u8 as owned)
 fn formatMode(mode: u32) [10]u8 {
-    var result: [10]u8 = .{};
+    var result: [10]u8 = undefined;
     // File type
     result[0] = switch (mode & 0o170000) {
         0o040000 => 'd',
@@ -2176,14 +2195,14 @@ fn formatMode(mode: u32) [10]u8 {
 
 /// Print detailed listing like `ls -dils` for a file
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
+fn printDetailedListing(io: std.Io, path: []const u8, allocator: std.mem.Allocator) void {
     // Use statFile to get standard fs.Stat, then use POSIX stat for detailed fields
-    const stat = std.fs.cwd().statFile(path) catch return;
+    const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch return;
 
     const c_path = allocator.dupeZ(u8, path) catch return;
     // safe-transpile: free removed (memory owned by safe type);
     var pst: std.posix.Stat = std.mem.zeroes(std.posix.Stat);
-    if (std.c.stat(c_path, &pst) != 0) return;
+    if (std.c.fstatat(std.posix.AT.FDCWD, c_path, &pst, 0) != 0) return;
 
     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const mode_str = blk: {
@@ -2199,7 +2218,7 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     // Format time like ls -l: "Mon DD HH:MM" or "Mon DD  YYYY"
     const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
-    const mtime_sec: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+    const mtime_sec: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
     // safe-transpile: @intCast requires manual review — consider safe.CheckedInt(T).init(@intCast)
     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(mtime_sec) };
     const epoch_day = epoch.getEpochDay();
@@ -2207,9 +2226,9 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     const month_day = year_day.calculateMonthDay();
     const day_secs = epoch.getDaySeconds();
 
-    var time_buf: [64]u8 = .{};
+    var time_buf: [64]u8 = undefined;
     const time_str = blk: {
-        const now = std.time.timestamp();
+        const now = std.Io.Clock.real.now(io).toSeconds();
         const age_seconds = now - mtime_sec;
         const six_months: i64 = 6 * 30 * 24 * 3600;
         const month_idx = @intFromEnum(month_day.month) - 1;
@@ -2230,15 +2249,15 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
     };
 
     // Look up user and group names (fallback to numeric IDs)
-    var uname_buf: [64]u8 = .{};
-    var gname_buf: [64]u8 = .{};
+    var uname_buf: [64]u8 = undefined;
+    var gname_buf: [64]u8 = undefined;
     const uname = std.fmt.bufPrint(&uname_buf, "{d}", .{uid}) catch "?";
     const gname = std.fmt.bufPrint(&gname_buf, "{d}", .{gid}) catch "?";
 
     const basename = std.fs.path.basename(path);
 
     // Format: ino blocks mode nlink owner group size time basename
-    var output_buf: [4096]u8 = .{};
+    var output_buf: [4096]u8 = undefined;
     const output = std.fmt.bufPrint(&output_buf, "{d} {d} {s} {d} {s} {s} {d} {s} {s}\n", .{
         ino,
         @divFloor(blocks, 2), // GNU find -ls uses 1K blocks; st.blocks is 512-byte blocks
@@ -2251,16 +2270,16 @@ fn printDetailedListing(path: []const u8, allocator: std.mem.Allocator) void {
         basename,
     }) catch return;
 
-    _ = std.posix.write(std.posix.STDOUT_FILENO, output) catch {};
+    _ = std.Io.File.stdout().writeStreamingAll(io, output) catch {};
 }
 
 // safe-transpile: function uses raw slice parameter — consider safe.String
-fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
+fn performAction(io: std.Io, path: []const u8, options: FindOptions, allocator: std.mem.Allocator) void {
     if (options.delete_matched) {
-        deletePath(path);
+        deletePath(io, path);
     } else if (options.exec_command) |cmd| {
         // Build command args, replacing {} with path
-        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        var child_args: std.ArrayListUnmanaged([]const u8) = .empty;
         defer child_args.deinit(allocator);
         for (cmd) |arg| {
             if (safe.SimdUtils.eql(arg, "{}")) {
@@ -2270,12 +2289,12 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
         }
         if (child_args.items.len > 0) {
-            var child = std.process.Child.init(child_args.items, allocator);
-            _ = child.spawnAndWait() catch {};
+            var child = std.process.spawn(io, .{ .argv = child_args.items }) catch return;
+            _ = child.wait(io) catch {};
         }
     } else if (options.ok_command) |cmd| {
         // Build command line for display
-        var display_buf: [4096]u8 = .{};
+        var display_buf: [4096]u8 = undefined;
         var db_pos: usize = 0;
         // safe-transpile: for with index access requires manual review
         for (cmd, 0..) |arg, idx| {
@@ -2292,15 +2311,16 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
         }
         const display = display_buf[0..db_pos];
-        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
-        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, display) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, " ? ") catch {};
 
         // Read one character from stdin
-        var buf: [1]u8 = .{};
-        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        var buf: [1]u8 = undefined;
+        var stdin_file = std.Io.File.stdin();
+        const bytes_read = stdin_file.readStreaming(io, &[_][]u8{&buf}) catch 0;
         if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
             // Build command args, replacing {} with path
-            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var child_args: std.ArrayListUnmanaged([]const u8) = .empty;
             defer child_args.deinit(allocator);
             for (cmd) |arg| {
                 if (safe.SimdUtils.eql(arg, "{}")) {
@@ -2310,25 +2330,25 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
                 }
             }
             if (child_args.items.len > 0) {
-                var child = std.process.Child.init(child_args.items, allocator);
-                _ = child.spawnAndWait() catch {};
+                var child = std.process.spawn(io, .{ .argv = child_args.items }) catch return;
+                _ = child.wait(io) catch {};
             }
         }
         // Consume rest of line
         var __zust_loop_counter: u64 = 0;
         while (true) {
             __zust_loop_counter += 1;
-            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+            if (__zust_loop_counter > 1_000_000) return;
 
-            var discard: [1]u8 = .{};
-            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            var discard: [1]u8 = undefined;
+            const n = stdin_file.readStreaming(io, &[_][]u8{&discard}) catch break;
             if (n == 0 or discard[0] == '\n') break;
         }
     } else if (options.execdir_command) |cmd| {
         // Execute in the file's parent directory, replacing {} with basename
         const basename = std.fs.path.basename(path);
         const dirname = std.fs.path.dirname(path) orelse ".";
-        var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+        var child_args: std.ArrayListUnmanaged([]const u8) = .empty;
         defer child_args.deinit(allocator);
         for (cmd) |arg| {
             if (safe.SimdUtils.eql(arg, "{}")) {
@@ -2339,13 +2359,13 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         }
         if (child_args.items.len > 0) {
             // Save original cwd, chdir to parent, spawn child, restore cwd
-            const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+            const original_cwd = std.process.currentPathAlloc(io, allocator) catch null;
             // safe-transpile: free removed (memory owned by safe type);
-            _ = std.posix.chdir(dirname) catch {};
-            var child = std.process.Child.init(child_args.items, allocator);
-            _ = child.spawnAndWait() catch {};
+            std.process.setCurrentPath(io, dirname) catch {};
+            var child = std.process.spawn(io, .{ .argv = child_args.items }) catch return;
+            _ = child.wait(io) catch {};
             if (original_cwd) |ocwd| {
-                _ = std.posix.chdir(ocwd) catch {};
+                std.process.setCurrentPath(io, ocwd) catch {};
             }
         }
     } else if (options.okdir_command) |cmd| {
@@ -2353,7 +2373,7 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         const basename = std.fs.path.basename(path);
         const dirname = std.fs.path.dirname(path) orelse ".";
         // Build command line for display
-        var display_buf: [4096]u8 = .{};
+        var display_buf: [4096]u8 = undefined;
         var db_pos: usize = 0;
         // safe-transpile: for with index access requires manual review
         for (cmd, 0..) |arg, idx| {
@@ -2370,14 +2390,15 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
             }
         }
         const display = display_buf[0..db_pos];
-        _ = std.posix.write(std.posix.STDOUT_FILENO, display) catch {};
-        _ = std.posix.write(std.posix.STDOUT_FILENO, " ? ") catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, display) catch {};
+        _ = std.Io.File.stdout().writeStreamingAll(io, " ? ") catch {};
 
         // Read one character from stdin
-        var buf: [1]u8 = .{};
-        const bytes_read = std.posix.read(std.posix.STDIN_FILENO, &buf) catch 0;
+        var buf: [1]u8 = undefined;
+        var stdin_file = std.Io.File.stdin();
+        const bytes_read = stdin_file.readStreaming(io, &[_][]u8{&buf}) catch 0;
         if (bytes_read > 0 and (buf[0] == 'y' or buf[0] == 'Y')) {
-            var child_args: std.ArrayListUnmanaged([]const u8) = .{};
+            var child_args: std.ArrayListUnmanaged([]const u8) = .empty;
             defer child_args.deinit(allocator);
             for (cmd) |arg| {
                 if (safe.SimdUtils.eql(arg, "{}")) {
@@ -2387,13 +2408,13 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
                 }
             }
             if (child_args.items.len > 0) {
-                const original_cwd = std.process.getCwdAlloc(allocator) catch null;
+                const original_cwd = std.process.currentPathAlloc(io, allocator) catch null;
                 // safe-transpile: free removed (memory owned by safe type);
-                _ = std.posix.chdir(dirname) catch {};
-                var child = std.process.Child.init(child_args.items, allocator);
-                _ = child.spawnAndWait() catch {};
+                std.process.setCurrentPath(io, dirname) catch {};
+                var child = std.process.spawn(io, .{ .argv = child_args.items }) catch return;
+                _ = child.wait(io) catch {};
                 if (original_cwd) |ocwd| {
-                    _ = std.posix.chdir(ocwd) catch {};
+                    std.process.setCurrentPath(io, ocwd) catch {};
                 }
             }
         }
@@ -2401,24 +2422,24 @@ fn performAction(path: []const u8, options: FindOptions, allocator: std.mem.Allo
         var __zust_loop_counter: u64 = 0;
         while (true) {
             __zust_loop_counter += 1;
-            if (__zust_loop_counter > 1_000_000) return error.InfiniteLoop;
+            if (__zust_loop_counter > 1_000_000) return;
 
-            var discard: [1]u8 = .{};
-            const n = std.posix.read(std.posix.STDIN_FILENO, &discard) catch break;
+            var discard: [1]u8 = undefined;
+            const n = stdin_file.readStreaming(io, &[_][]u8{&discard}) catch break;
             if (n == 0 or discard[0] == '\n') break;
         }
     } else if (options.list_detailed) {
-        printDetailedListing(path, allocator);
+        printDetailedListing(io, path, allocator);
     } else if (options.fprintf_file) |outfile| {
         if (options.fprintf_format) |fmt| {
-            printFormattedToFile(path, fmt, outfile, allocator);
+            printFormattedToFile(io, path, fmt, outfile, allocator);
         }
     } else if (options.fprint_file) |outfile| {
-        printPathToFile(path, options.print0, outfile);
+        printPathToFile(io, path, options.print0, outfile);
     } else if (options.printf_format) |fmt| {
-        printFormatted(path, fmt, allocator);
+        printFormatted(io, path, fmt, allocator);
     } else {
-        printPath(path, options.print0);
+        printPath(io, path, options.print0);
     }
 }
 
@@ -2463,19 +2484,22 @@ fn charsEqual(a: u8, b: u8, case_insensitive: bool) bool {
     return a == b;
 }
 
-fn printUsage() void {
+fn printUsage(io: std.Io) void {
     const help_text =
         \\Usage: find [-H] [-L] [-P] [path...] [expression]
-        \\
+        \\\
+
         \\GPU-accelerated file search in directory hierarchies.
         \\Default path is current directory. Use - to read paths from stdin.
-        \\
+        \\\
+
         \\Tests (Pattern Matching):                        [GPU+SIMD]
         \\  -name PATTERN     Base of file name matches shell PATTERN
         \\  -iname PATTERN    Like -name but case-insensitive
         \\  -path PATTERN     File path matches shell PATTERN
         \\  -ipath PATTERN    Like -path but case-insensitive
-        \\
+        \\\
+
         \\Tests (File Type):                               [CPU]
         \\  -type TYPE        File is of type TYPE:
         \\                      f  regular file
@@ -2485,7 +2509,8 @@ fn printUsage() void {
         \\                      c  character device
         \\                      p  named pipe (FIFO)
         \\                      s  socket
-        \\
+        \\\
+
         \\Tests (File Attributes):                         [CPU]
         \\  -empty             File is empty (0 size for files, no entries for dirs)
         \\  -size [+-]N[ckMG]  File uses N units of space:
@@ -2542,9 +2567,9 @@ fn printUsage() void {
         \\  echo '/home /var' | find - -name '*.conf'
         \\                                    Read paths from stdin
         \\  find --gpu . -name '*.rs'         Force GPU backend
-        \\
+        \\n
     ;
-    _ = std.posix.write(std.posix.STDOUT_FILENO, help_text) catch {};
+    _ = std.Io.File.stdout().writeStreamingAll(io, help_text) catch {};
 }
 
 // Tests

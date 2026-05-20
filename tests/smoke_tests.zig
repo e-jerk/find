@@ -26,17 +26,22 @@ const TestCase = struct {
     name: []const u8,
     pattern: []const u8,
     options: MatchOptions,
-    path_generator: *const fn (std.mem.Allocator, usize) anyerror![][]const u8,
+    path_generator: *const fn (std.Io, std.mem.Allocator, usize) anyerror![][]const u8,
     expected_match_ratio: f64,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args_iter.deinit();
+    var args: std.ArrayList([]const u8) = .empty;
+    defer args.deinit(allocator);
+    while (args_iter.next()) |arg| {
+        try args.append(allocator, arg);
+    }
+    const args_slice = args.items;
 
     // Default test size: 50K paths for thorough testing
     var num_paths: usize = 50000;
@@ -44,13 +49,13 @@ pub fn main() !void {
 
     // Parse arguments
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--paths") and i + 1 < args.len) {
+    while (i < args_slice.len) : (i += 1) {
+        if (std.mem.eql(u8, args_slice[i], "--paths") and i + 1 < args_slice.len) {
             i += 1;
-            num_paths = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, args[i], "--iterations") and i + 1 < args.len) {
+            num_paths = try std.fmt.parseInt(usize, args_slice[i], 10);
+        } else if (std.mem.eql(u8, args_slice[i], "--iterations") and i + 1 < args_slice.len) {
             i += 1;
-            iterations = try std.fmt.parseInt(usize, args[i], 10);
+            iterations = try std.fmt.parseInt(usize, args_slice[i], 10);
         }
     }
 
@@ -144,13 +149,13 @@ pub fn main() !void {
         });
         std.debug.print("-" ** 70 ++ "\n", .{});
 
-        const paths = try tc.path_generator(allocator, num_paths);
+        const paths = try tc.path_generator(io, allocator, num_paths);
         defer {
             for (paths) |p| allocator.free(p);
             allocator.free(paths);
         }
 
-        results[test_idx] = try runTest(allocator, tc.name, paths, tc.pattern, tc.options, iterations);
+        results[test_idx] = try runTest(io, allocator, tc.name, paths, tc.pattern, tc.options, iterations);
 
         if (!results[test_idx].passed) all_passed = false;
 
@@ -230,6 +235,7 @@ pub fn main() !void {
 }
 
 fn runTest(
+    io: std.Io,
     allocator: std.mem.Allocator,
     name: []const u8,
     paths: [][]const u8,
@@ -251,7 +257,7 @@ fn runTest(
 
     // Run CPU benchmark
     std.debug.print("  CPU benchmark...\n", .{});
-    const cpu_stats = try benchmarkCpu(allocator, paths, pattern, options, iterations);
+    const cpu_stats = try benchmarkCpu(io, allocator, paths, pattern, options, iterations);
     result.cpu_throughput_kps = cpu_stats.throughput_kps;
     result.cpu_matches = cpu_stats.matches;
     result.expected_matches = cpu_stats.matches;
@@ -260,7 +266,7 @@ fn runTest(
     // Run Metal benchmark (macOS only)
     if (build_options.is_macos) {
         std.debug.print("  Metal benchmark...\n", .{});
-        if (benchmarkMetal(allocator, paths, pattern, options, iterations)) |metal_stats| {
+        if (benchmarkMetal(io, allocator, paths, pattern, options, iterations)) |metal_stats| {
             result.metal_throughput_kps = metal_stats.throughput_kps;
             result.metal_matches = metal_stats.matches;
             std.debug.print("    Throughput: {d:.1} K paths/s, Matches: {d}\n", .{ metal_stats.throughput_kps, metal_stats.matches });
@@ -277,7 +283,7 @@ fn runTest(
 
     // Run Vulkan benchmark
     std.debug.print("  Vulkan benchmark...\n", .{});
-    if (benchmarkVulkan(allocator, paths, pattern, options, iterations)) |vulkan_stats| {
+        if (benchmarkVulkan(io, allocator, paths, pattern, options, iterations)) |vulkan_stats| {
         result.vulkan_throughput_kps = vulkan_stats.throughput_kps;
         result.vulkan_matches = vulkan_stats.matches;
         std.debug.print("    Throughput: {d:.1} K paths/s, Matches: {d}\n", .{ vulkan_stats.throughput_kps, vulkan_stats.matches });
@@ -300,6 +306,7 @@ const BenchStats = struct {
 };
 
 fn benchmarkCpu(
+    io: std.Io,
     allocator: std.mem.Allocator,
     paths: [][]const u8,
     pattern: []const u8,
@@ -310,9 +317,9 @@ fn benchmarkCpu(
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.awake.now(io);
         var result = try cpu.matchNames(paths, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io, .awake).toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -325,6 +332,7 @@ fn benchmarkCpu(
 }
 
 fn benchmarkMetal(
+    io: std.Io,
     allocator: std.mem.Allocator,
     paths: [][]const u8,
     pattern: []const u8,
@@ -340,9 +348,9 @@ fn benchmarkMetal(
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.awake.now(io);
         var result = try matcher.matchNames(paths, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io, .awake).toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -355,6 +363,7 @@ fn benchmarkMetal(
 }
 
 fn benchmarkVulkan(
+    io: std.Io,
     allocator: std.mem.Allocator,
     paths: [][]const u8,
     pattern: []const u8,
@@ -368,9 +377,9 @@ fn benchmarkVulkan(
     var matches: u64 = 0;
 
     for (0..iterations) |_| {
-        const start = std.time.milliTimestamp();
+        const start = std.Io.Clock.awake.now(io);
         var result = try matcher.matchNames(paths, pattern, options, allocator);
-        const elapsed = std.time.milliTimestamp() - start;
+        const elapsed = start.untilNow(io, .awake).toMilliseconds();
         matches = result.total_matches;
         result.deinit();
         total_time += elapsed;
@@ -384,30 +393,30 @@ fn benchmarkVulkan(
 
 // Path generators for different test scenarios
 
-fn generateMixedExtensions(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateMixedExtensions(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const extensions = [_][]const u8{ ".txt", ".c", ".h", ".py", ".js", ".rs", ".zig", ".md", ".json", ".yaml" };
     const dirs = [_][]const u8{ "src", "lib", "tests", "docs", "config", "data" };
 
-    return generatePaths(allocator, count, &dirs, &extensions);
+    return generatePaths(io, allocator, count, &dirs, &extensions);
 }
 
-fn generateImageFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateImageFiles(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const extensions = [_][]const u8{ ".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG", ".gif", ".GIF", ".bmp", ".svg" };
     const dirs = [_][]const u8{ "images", "photos", "assets", "media", "uploads" };
 
-    return generatePaths(allocator, count, &dirs, &extensions);
+    return generatePaths(io, allocator, count, &dirs, &extensions);
 }
 
-fn generateCodePaths(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateCodePaths(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const extensions = [_][]const u8{ ".c", ".h", ".cpp", ".hpp", ".py", ".js", ".ts", ".rs", ".go", ".java" };
     const dirs = [_][]const u8{ "src", "lib", "include", "pkg", "cmd", "internal", "vendor", "third_party" };
 
-    return generatePaths(allocator, count, &dirs, &extensions);
+    return generatePaths(io, allocator, count, &dirs, &extensions);
 }
 
-fn generateShortNames(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateShortNames(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     const short_names = [_][]const u8{ "a", "b", "c", "d", "e", "f", "ab", "cd", "ef", "gh", "abc", "def" };
@@ -425,9 +434,9 @@ fn generateShortNames(allocator: std.mem.Allocator, count: usize) ![][]const u8 
     return paths;
 }
 
-fn generateLogFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateLogFiles(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     const prefixes = [_][]const u8{ "app", "error", "access", "debug", "system", "auth", "audit", "backup" };
@@ -445,9 +454,9 @@ fn generateLogFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     return paths;
 }
 
-fn generateMixedNames(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateMixedNames(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     for (paths, 0..) |*p, idx| {
@@ -464,9 +473,9 @@ fn generateMixedNames(allocator: std.mem.Allocator, count: usize) ![][]const u8 
     return paths;
 }
 
-fn generateTestFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateTestFiles(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     const test_types = [_][]const u8{ "unit", "integration", "e2e", "smoke", "perf", "stress" };
@@ -490,9 +499,9 @@ fn generateTestFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     return paths;
 }
 
-fn generateHiddenFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8 {
+fn generateHiddenFiles(io: std.Io, allocator: std.mem.Allocator, count: usize) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     const hidden_names = [_][]const u8{ ".gitignore", ".env", ".bashrc", ".zshrc", ".vimrc", ".config", ".cache" };
@@ -514,13 +523,14 @@ fn generateHiddenFiles(allocator: std.mem.Allocator, count: usize) ![][]const u8
 }
 
 fn generatePaths(
+    io: std.Io,
     allocator: std.mem.Allocator,
     count: usize,
     dirs: []const []const u8,
     extensions: []const []const u8,
 ) ![][]const u8 {
     const paths = try allocator.alloc([]const u8, count);
-    var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(io).toSeconds()));
     const random = prng.random();
 
     for (paths, 0..) |*p, idx| {

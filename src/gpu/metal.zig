@@ -347,7 +347,7 @@ pub const MetalMatcher = struct {
         if (config_buffer.contents()) |ptr| {
             const config_ptr: *RegexMatchConfig = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            config_ptr[0] = config;
+            config_ptr.* = config;
         }
 
         // States buffer
@@ -411,7 +411,7 @@ pub const MetalMatcher = struct {
         if (count_buffer.contents()) |ptr| {
             const count_ptr: *u32 = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            count_ptr[0] = 0;
+            count_ptr.* = 0;
         }
 
         // Header buffer for regex_find function
@@ -427,7 +427,7 @@ pub const MetalMatcher = struct {
         if (header_buffer.contents()) |ptr| {
             const header_ptr: *RegexHeader = // safe-transpile: @ptrCast requires manual review — add @alignCast if alignment is guaranteed
                 @ptrCast(@alignCast(ptr));
-            header_ptr[0] = header;
+            header_ptr.* = header;
         }
 
         // Create command buffer and encoder
