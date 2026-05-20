@@ -1436,8 +1436,10 @@ fn walkDirectory(
     var has_entries = false;
     var children: std.ArrayListUnmanaged([]const u8) = .empty;
     defer {
-        for (children.items) |_| // safe-transpile: free removed (memory owned by safe type);
-            children.deinit(allocator);
+        for (children.items) |child| {
+            allocator.free(child);
+        }
+        children.deinit(allocator);
     }
 
     while (try iter.next(io)) |entry| {
